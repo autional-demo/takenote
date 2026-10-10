@@ -598,7 +598,7 @@ handleOAuthCallback()
 5. **刷新分路**：SSO 会话 refresh 走 oauth（公开 client 凭 client_id）；密码会话走 identity。SDK 按会话模式自动分派，接入方无感。
 6. **边界（未做）**：浏览器直连 identity 的**密码**登录（非 SSO）仍受网关白名单约束——第三方 SPA 建议一律走 SSO；如需直连密码登录另议。
 
-### SDK 侧修复对照（@autional/core，changeset minor）
+### SDK 侧修复对照（@autional/core 0.3.2；定级 minor→patch）
 
 | 处                  | 原态（0.3.1）                              | 现态                                                                                                                       |
 | ------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
@@ -610,17 +610,19 @@ handleOAuthCallback()
 | 参考实现            | —                                          | demo：SSO 按钮 + `/oauth/callback` 路由页                                                                                  |
 | 验证                | —                                          | 单测 93/93（含换票参数断言、state 防 CSRF、模式分派）；typecheck 全绿                                                      |
 
-### 执行清单与结果（全链闭环，2026-10-10 → 10-11）
+**发布轨迹（10-11）**：PR #3 合并 `283c89f` → 发版提交 `f690c38` → npmjs 发布（tag `next` → 隔离冒烟 → 提 `latest`）→ npmmirror 同步。定级修正：minor→**patch**（旧 OAuth 路径此前无法完成换票、无可用旧行为可破坏；且 0.x minor 会级联 dependent 包 major，patch 零级联）。
 
-| #   | 动作                                                              | 结果                                                                                     |
-| --- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| ①   | 提交 core CORS 修复 → tag `micro-middleware v1.0.36`              | ✅ 已提交 + 已 tag                                                                       |
-| ②   | bump 使用方（**gateway 必含**；identity 等建议）                  | ✅ 已 bump → 各自 CI dev 部署 OK                                                         |
-| ③   | 提交 oauth（动态 CORS + 数据链）→ CI dev                          | ✅ `960a5d8`（动态 CORS + 数据链）+ `1950a7d`（T7 refresh 修复）→ CI dev build+deploy OK |
-| ④   | SDK 分支 + PR（base main）+ changeset（minor）                    | ✅ PR 已建（autional/sdk #3，OPEN 待合并）                                               |
-| ⑤   | skill 三通道发布（com web / cn web / CDN）                        | ⏳ 待 ④ 合并后执行（产物已就绪、五门 PASS）                                              |
-| ⑥   | dev E2E：注册 client（redirect_uri + cors_origins）→ SSO 全链真机 | ✅ 三腿全绿：CLI 18/18 + 浏览器 12/12 + **线上生产复验 9/9**（见下节）                   |
-| ⑦   | lab 台账提交（本文件，feature/autional）                          | ✅ 本节                                                                                  |
+### 执行清单与结果（全链闭环，2026-10-10 → 10-11 收官）
+
+| #   | 动作                                                              | 结果                                                                                                                     |
+| --- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| ①   | 提交 core CORS 修复 → tag `micro-middleware v1.0.36`              | ✅ 已提交 + 已 tag                                                                                                       |
+| ②   | bump 使用方（**gateway 必含**；identity 等建议）                  | ✅ 已 bump → 各自 CI dev 部署 OK                                                                                         |
+| ③   | 提交 oauth（动态 CORS + 数据链）→ CI dev                          | ✅ `960a5d8`（动态 CORS + 数据链）+ `1950a7d`（T7 refresh 修复）→ CI dev build+deploy OK                                 |
+| ④   | SDK 分支 + PR（base main）+ changeset                             | ✅ PR #3 已合并（`283c89f`）→ `@autional/core@0.3.2` 已发布（npmjs；npmmirror 同步）                                     |
+| ⑤   | skill 三通道发布（com web / cn web / CDN）                        | ✅ 全发：web `f3e94ed` / CDN `f3b4024`（com `v0.1.0-6cdb6716`、cn `v0.1.0-ecb907ae`）；T4 复验 34/34（见下「发布收官」） |
+| ⑥   | dev E2E：注册 client（redirect_uri + cors_origins）→ SSO 全链真机 | ✅ 三腿全绿：CLI 18/18 + 浏览器 12/12 + **线上生产复验 9/9**（见下节）                                                   |
+| ⑦   | lab 台账提交（本文件，feature/autional）                          | ✅ 本节                                                                                                                  |
 
 > ⑥ 实测又挖出两个新缺陷（T7 refresh 契约 / T8 同意页提交链），并纠正一处部署拓扑误解——详见下节「SSO 接入线实证」。
 
@@ -798,3 +800,30 @@ handleOAuthCallback()
 | `oauth-token-apiprobe.mjs`  | SSO token 可调用面探针（node 侧）                                | 4/4 200    |
 
 > 运维备注：① demo 启动需 `VITE_AUTIONAL_APP_ID=<client_id> VITE_AUTIONAL_ISSUER=https://api.autional.cn VITE_AUTIONAL_API_URL=https://api.autional.cn/bff`；② driver 结束会清理客户端（G1），复跑前需重新注册 + 重启 demo（appId 为启动期 env）；③ profile 卡快照时序——请求稍晚于 h1 水合（≤3s）出现，等待后成功渲染；三次连跑 + 探针排除了产品缺陷。
+
+## 发布收官（2026-10-11）：skill 三通道 v3.1 + npm 0.3.2 落地
+
+> 本文件追踪的整条线（C5/C6/C11 根修 → 形态 2 SSO → T7/T8 → demo 实证）于 10-11 全部完成发布闭环。所有版本、散列与复验矩阵见 workspace `docs/positioning/12-skill-reachability-registry.md` §14 与 sdk `skills/CHANGELOG.md`（`4bedde2`）。
+
+### 结论先行
+
+| 断言                                                                            | 依据                                                                                                      |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **skill 三通道 v3.1 全发**（内容含 §5.2b SSO 步骤 + apiUrl `/bff` 修正）        | 站点 web `f3e94ed`；CDN `f3b4024`（com `v0.1.0-6cdb6716` / cn `v0.1.0-ecb907ae`）；T4 复验 **34/34** 全绿 |
+| **@autional/core@0.3.2 上 npm**（OAuth 换票契约修复 + changePassword 字段对齐） | sdk PR #3 合并 `283c89f` → 发布 `f690c38`；npmjs `latest`；npmmirror 已同步                               |
+| **发版时序约束（C11 教训）已遵守**：先服务端、后 npm                            | identity fail-loud 已于 10-10 提升 prod；npm 0.3.2 在 SSO 服务端修复的 `.cn` 面 E2E 全绿基线之后发布      |
+
+### 本波附带修复（生成器与台账）
+
+- **G3 跨平台假红根治**（sdk `3213050`）：`build-skills.mjs` 读 `_core` 源归一 CRLF→LF —— Windows autocrlf 检出与 CI 的 `coreHash` 从此一致（PR #3 CI 曾因此红，修复即绿、可复现）。
+- **复验计数勘正**：T4「30 项」为矩阵行合计笔误（行和实 32）；本轮 latest 别名按区 × 4 文件逐查 → **34**；sdk `RELEASING.md` §6 已同步勘正。
+
+### 本次发布资产坐标（远端）
+
+| 资产           | 坐标                               | 说明                                                         |
+| -------------- | ---------------------------------- | ------------------------------------------------------------ |
+| skill 站点镜像 | github.com:autional/web `f3e94ed`  | 双站 `public/ai/` 镜像 + `.sha256`                           |
+| skill CDN      | github.com:autional/cdn `f3b4024`  | 双区版本目录 + 指针 / rewrite 跟版                           |
+| skill 内容基线 | github.com:autional/sdk `f690c38`  | 内容 `1f5af5b` + `d0c66bd`；生成器 `3213050`；台账 `4bedde2` |
+| SDK 包         | npmjs `@autional/core@0.3.2`       | tags：`latest` = `next` = 0.3.2（npmmirror 同步）            |
+| 接入口径       | 本文件「关键口径」节 + skill §5.2b | 登记两样（redirect_uri + cors_origins）+ apiUrl 带 `/bff`    |
