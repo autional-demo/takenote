@@ -17,7 +17,7 @@
 | P2   | 9    | D4 · D5 · D8 · D10 · D13 · D16 · D18 · D19 · D20                                  |
 | P3   | 4    | D7 · D11 · D14 · D15                                                              |
 
-（C 组另含 P0 两项：C5 试用管理员密码传输口径自相矛盾——2026-10-10 已实测对齐；C6 试用租户 RBAC 零播种——管理面门户 403 不可进。另有 C11：SDK changePassword 字段名与服务端不符，调用必 400。）
+（C 组另含 P0 两项：C5 试用管理员密码传输口径自相矛盾——实验内已对齐，2026-10-10 **产品侧根修并部署 dev**；C6 试用租户 RBAC 零播种——**同日根修**：试用链补 RBAC 播种 + `initial_role` 通道生效，真机 E2E 9/9 全绿。另有 C11：SDK changePassword 字段名与服务端不符，调用必 400 → **同日 SDK 修复 PR 已提、服务端对称/非对称改密 fail-loud 已部署**。三项修复落地对照见「深挖」节。）
 
 ### 过程一图
 
@@ -149,6 +149,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - **处置（2026-10-10 实验内已实测对齐）**：以 plain 登录取令牌后调 `PUT /bff/identity/api/v1/auth/me/password`（服务端字段：`old_password`=原明文、`new_password`=`sha256hex(同一口令|tid)`、`password_transmission:"hash"`）→ 200 `password changed successfully`；随后 hash 登录 200 / plain 登录 401 `password content mismatch` —— 口令值不变，仅存储形从 argon2(明文) 翻转为 argon2(hash 摘要)，与租户策略对齐。脚本：`provision/admin-align-hash.mjs`（内含 SDK 形/服务端形双探针与对齐后验证）。
 - 注：无法用 `sdk.changePassword()` 完成此对齐——该 API 本身调不通（C11 字段名不符 → 400），只能手写请求体。
 - 产品侧修复建议：`RegisterTrialAdmin` 注册时携带 `password_transmission=hash` + 预哈希口令（参照 `service-identity/db/seeds/demo_accounts.go` 的 `PasswordTransmission: domain.TransmissionHash` 写法），从源头消除矛盾。→ 代码级根因闭环（两处"空串豁免"）见后文「深挖」节。
+- **产品侧根修（2026-10-10，已部署 dev）**：按上述建议落地——tenant `RegisterTrialAdmin` 改发 `password_transmission:"hash"` + `sha256hex(明文|tenantID)` 预哈希（`internal/infrastructure/identity/client.go`）；非 2xx 错误附响应体摘要（原"只报状态码"致此类错配长期不可见）。注册侧"空串豁免"本体未动（收紧属另一争议面）。真机验证：hash 登录 200（E2E T2）。
 
 ### C6 · initial_role=super_admin 被静默丢弃——试用管理员 0 RBAC 角色
 
@@ -158,6 +159,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - **2026-10-10 门户实测补证（升级为 P0 级阻断）**：C5 对齐后，admin.autional.com 登录链路（auth.autional.com/takenote-demo/login，请求头 `x-entry-plane: admin`）密码层已过（请求体内为正确 hash），随即被入口平面门禁拦死：**403 `40000503 entry plane not authorized`**（auth_login.go:668 → entry_plane_authz.go:47：admin 平面需 admin 类角色）。`check-role` 七码探针（super_admin / admin / security_admin / user_manager / auditor / member / tenant_admin）——**管理员与 takenote-alice 全部 false**：不只 initial_role 丢失，连 `member` 都不存在——该试用租户 RBAC 完全零播种（SDK 注册路径的默认角色亦未落地）。
 - 链条：C5 的 401 此前一直掩盖 C6 的 403；密码对齐后 403 成为可见阻断。
 - 影响升级：管理面门户（admin / security）对试用租户管理员**不可进入**，且无客户端自救路径（授予角色本身需管理面权限——鸡生蛋死结）；用户面登录层已验证可用（api 平面 200）。→ 全链代码证据与修复设计（含存量播种方案）见后文「深挖」节。
+- **产品侧根修（2026-10-10，已部署 dev）**：三层齐落——① rbac `BootstrapTenantRBAC` gRPC **幂等化**（三角色 find-or-create + exact code 比对 + 重放安全，`internal/grpc/server.go`）；② tenant 试用链在管理员注册**之前**调用该 gRPC（普通建租户链原有调用不动；失败不阻断、域事件 + metric 同口径）；③ identity 注册链 `initial_role` 通道打通（**仅当** X-API-Key 命中已配置内部 key 且角色 ∈ `{super_admin,admin,member}` 才生效，公开注册静默忽略防提权）。真机 E2E（`service-tenant/e2e/trial-onboard-e2e.mjs`）**9/9 全绿**：`check-role super_admin=true`（initial_role 绑定）+ `member=true`（member 默认角色随 bootstrap 落地，同时证明 bootstrap 先于注册的时序）。门户 403「entry plane not authorized」的同源判定前提消除；门户浏览器腿未覆（可选）。→ 修复落地对照见「深挖」节。
 
 ### C7 · open 模式注册不写 tenant_members（成员列表为空）
 
@@ -186,10 +188,11 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 版本核对：装机版 = `npm view @autional/core version` = **0.3.0**（最新发布版），非旧版漂移。
 - 影响：`sdk.changePassword()` 对所有接入项目 100% 不可用；本实验的 C5 对齐只能手写请求体绕行。建议 SDK 改用 `old_password`/`new_password`（或服务端兼容别名，二者取一并写进契约）。
 - 附注：hash 模式下 `new_password` 须传**摘要**（64 hex；服务端 `min=8` 校验可过），「新口令先按策略处理」的语义只在 SDK 源码里，文档无述——手写调用者必须知道这一点。→ 成因（双写契约 + 自证测试）与 symmetric/asymmetric 静默损坏（服务端改密链无解密阶段）见后文「深挖」节。
+- **修复落地（2026-10-10）**：① SDK 仓 `autional/sdk` PR #1——字段名对齐 `old_password`/`new_password`、**新旧密码均**按租户策略预处理（只处理新密码会让旧密码校验恒失败）、修 `fetchAuthConfig` 取错配置面（原恒取 default → hash 输入拼错 tenant id）、symmetric/asymmetric 显式报错 `61001670`（changeset `@autional/core: patch`，发版另行执行）；错误契约背书的旧单测断言同步替换。② 服务端（identity）`changePasswordCore` 对 symmetric/asymmetric **fail-loud**（`ErrInvalidTransmissionMode` 61001670）——替代"密文当明文哈希 → 账号锁死"的静默损坏（深挖方案表 C 兜底已落）；方案 B（完整密钥交换支持）明确非本次范围。真机验证：hash 改密 200 → 新密重登 200 → 旧密 401（E2E T4-T6）。
 
 ### C 组小结（对 AI 接入的启示）
 
-- C5/C6 是**功能性阻断**：按 skill 流程建出的"管理员"登不上（hash 流）、且无权限——两个缺陷叠加，[B] 路径在"注册之后"实际不可用（C5 实验内已对齐；C6 仍开放 → 管理面门户 403 不可进）。
+- C5/C6 是**功能性阻断**：按 skill 流程建出的"管理员"登不上（hash 流）、且无权限——两个缺陷叠加，[B] 路径在"注册之后"实际不可用（2026-10-10 两项均已产品侧根修并部署 dev，真机 E2E 9/9；此前 C5 仅实验内对齐、C6 开放 → 管理面门户 403 不可进）。
 - C1/C3 是**能力面缺口**：SDK 不支持邀请码注册；平台无发码工具——[B] 路径两端的工具链都缺，接入者被夹在中间。
 - C2/C4/C9 是**语义/口径不一致**：文档说永久/示例名可用/策略强制，实现说试用/部分名保留/仅注册侧强制。
 - 接入建议（本实验实际采取的绕行）：直连 REST（正确 /bff 路径）完成租户与账号生命周期；账号用非保留名；hash 约定以 SDK 实现（带 `|`）为准；管理员口令先按 plain 登录取令牌、再经改密对齐到 hash（勿用 SDK changePassword，见 C11）；脚本一律带 5xx 重试。
@@ -499,6 +502,19 @@ CreateTrialTenant
 - **验证侧无策略换算**：`verifyPassword` 字节精确比对存储哈希（user_service.go:1519）→ 库是 argon2(明文)、客户端按策略送 hash → 必 401。
 - 两处豁免各自"为兼容历史"，叠加 = 死锁。**修复与 C6 同缝**：`RegisterTrialAdmin` 声明 `password_transmission=hash` + 预哈希（与 C5 建议同一处改）；或注册侧对非 plain 策略**拒绝空串**（收紧 auth_register.go:140 的豁免）。
 
+### 修复落地对照（2026-10-10 当日实施）
+
+深挖节提出的修复设计 → 实际落地形态。三仓（rbac / identity / tenant）依序合并 master（硬序：tenant 新请求依赖前两者能力），CI 自动部署 dev 三连 SUCCESS；SDK 走 GitHub PR。
+
+| 缺陷    | 深挖设计（本文件提议）                                                                                                              | 实际落地                                                                                                                                                                           | 收敛 / 差异                                                                                                                     |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| C6 治本 | 最小：identity `initial_role` 通道（X-API-Key 门）；完整：rbac **新增内部 HTTP API** `POST /internal/rbac/bootstrap-tenant`（幂等） | identity `initial_role` 通道 ✅；rbac **复用既有 gRPC `BootstrapTenantRBAC`**（幂等化改造：三角色 find-or-create + exact code 比对 + 重放测试）；tenant 试用链显式调用（先于注册） | **③ 由「新增 HTTP API」收敛为「复用既有 gRPC」**——普通建租户链本就调用该 RPC（tenant_service.go:213-221），免造新面、免新鉴权缝 |
+| C5      | `RegisterTrialAdmin` 声明 `password_transmission=hash` + 预哈希口令                                                                 | 同（tenant `identity/client.go` 单点改：body 加 transmission + `sha256hex(pwd\|tenantID)`；非 2xx 错误附响应体摘要）                                                               | 完全一致；注册侧"空串豁免"本体未收紧（另一争议面）                                                                              |
+| C11     | A 字段名对齐（首选）+ C 服务端 fail-loud 兜底；B 完整密钥交换支持                                                                   | SDK PR #1（A：字段名 + **双密码**预处理 + 租户配置取错修正 + symmetric/asymmetric 显式报错）；identity `changePasswordCore` fail-loud 61001670（C 兜底）                           | B 明确非目标；**单测修正注意**：旧断言是错误契约的背书，属"必须替换"而非"过时删除"                                              |
+| 防线    | 开通 E2E 断言：建租户 → 管理员登录 200 → `check-role super_admin` true → `member` true                                              | `service-tenant/e2e/trial-onboard-e2e.mjs`（纯 Node：注册 → hash 登录 → check-role ×2 → hash 改密 → 新密重登 / 旧密 401 → 软删清理），真机 **9/9 绿**                              | 加 T4-T6 改密段（C11 一并入防线）                                                                                               |
+
+**实施期新坑（E2E 首跑暴露，值得记入接入方知识）**：网关 **host × 受众双绑定**（`gateway-service.yaml` `entry.host_audiences`）——`api.<入口域>` host 仅放行 **machine** 受众，而 `check-role` 路由受众是 **user** → 经 api host 调用得 `403 40000503 route not available on this host`（登录/公开路由受众 public 不受 host 约束，恰好掩盖了这一层）。实测 `user.` / `auth.` / `cn.` host 均放行（401 非 403）；E2E 探针据此把 user 面调用改走 `user.<入口域>`。对消费方启示：**user 面路由（check-role 等）不能经 machine 入口调用**，须走对应门户 host；该行为是网关设计语义（P5 双绑定），但错误码（40000503 "route not available on this host"）对"host 对了、受众不对"的场景不具指向性，排查成本高。
+
 ### 结构性教训（对产品的通用含义）
 
 1. **静默丢弃是本案大头**：C6 字段被丢、ApplyDefaultRoles 空表返回 0、服务端未知键忽略——"静默"让缺陷活到线上。建议公共 API 开 `DisallowUnknownFields`（或未知键告警）；内部调用链的"意图字段"必须有一端实现，另一端可测。
@@ -512,7 +528,7 @@ CreateTrialTenant
 ### P0 · 主链路走不通
 
 1. **修 .com 站 references 区错配**（B1）—— 2026-10-10 复测仍在：`https://www.autional.com/ai/references/config-template.md` 头注明 `region: cn · lang: zh`，issuer=`api.autional.cn`。修产物装配，并在发布管线加「区/lang 一致性」自动校验。
-2. **统一管理员密码传输口径（C5）+ 试用租户 RBAC 播种（C6）** —— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上（实验内已用改密对齐，见 C5）；且试用租户 RBAC 零播种 → 管理面门户 403 不可进。修 C5 时一并让注册链路的 `initial_role` 真正生效。
+2. **统一管理员密码传输口径（C5）+ 试用租户 RBAC 播种（C6）** —— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上（实验内已用改密对齐，见 C5）；且试用租户 RBAC 零播种 → 管理面门户 403 不可进。修 C5 时一并让注册链路的 `initial_role` 真正生效。→ **2026-10-10 已产品侧落地并部署 dev**（注册走 hash 传输 + 试用链补 RBAC 播种 + `initial_role` 通道；真机 E2E 9/9 绿）。
 3. **补「部署形态」决策章**（D17）—— 浏览器端按 skill 配置 100% 被 CORS 拒。前置「同源反代（推荐，SDK 已内建代理模式）vs CORS 白名单」二选一，给 dev 代理 + 生产反代样例；失败处置表收录 CORS 特征串。
 4. **配置模板三处修正**（D1/D2/D3/D12）—— apiUrl 必须含 `/bff`；tenantId 传递方式（React provider 无此字段；register 需经 http 适配器注入 `X-Tenant-ID`，否则静默落到错误租户）；appId 无创建路径时的「置空 + 预期警告」指引。
 
@@ -521,14 +537,14 @@ CreateTrialTenant
 5. **新增「会话生命周期」步骤**（D19）—— 登录 / 登出 / 多标签联动 / 过期四项验收；明示「登出必须调用 SDK logout，只清应用态 = 登出失效」。
 6. **新增「老项目可运行性预检」**（A1-A4）—— 2020 老栈 × 现代 Node 四类阻断（node-sass / md4 / postcss exports / websocket-driver）检查清单与处置；React<18 项目 `--legacy-peer-deps` 指引（D6）；TS 项目工具链一致性说明（D9）。
 7. **验证纪律升级**（Phase 8 教训）—— ① 浏览器 E2E 设为必过项（Node 集成 PASS ≠ 浏览器可用）；② 代理/网关验证必须核响应体（200 可能是 SPA 回退）。两条写进 skill 验证章。
-8. **SDK `changePassword` 字段名对齐**（C11）—— SDK 发 `current_password`/`password`、服务端收 `old_password`/`new_password`，线上必 400；SDK 改名（首选）或服务端兼容别名，并注明 hash 模式下新口令传摘要。
+8. **SDK `changePassword` 字段名对齐**（C11）—— SDK 发 `current_password`/`password`、服务端收 `old_password`/`new_password`，线上必 400；SDK 改名（首选）或服务端兼容别名，并注明 hash 模式下新口令传摘要。→ **2026-10-10 SDK 修复 PR #1 已提**（字段名 + 双密码预处理 + 租户配置取错修正）+ 服务端 symmetric/asymmetric fail-loud 已部署（SDK 随发版对用户生效）。
 
 ### P2 · 体验与健壮性
 
 9. **错误面归一化**（D16/D20）—— SDK http 适配器对非 JSON 响应归一为「网关/网络错误」；AuthClient 复用 ApiClient 的重试/退避，或 skill 标注「哪层已重试、哪层没有」。
 10. **公开 API 修正**（D14/D15）—— facade 无 `refreshToken()`；`logout()` 为 fire-and-forget（Promise 完成 ≠ 服务端撤销完成），文档写明。
 11. **fallback 条款补 references 的 CDN 镜像路径**（B2）。
-12. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。
+12. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。→ `initial_role` 已生效（2026-10-10）；邀请码铸造 / SDK 邀请注册 / `tenant_members` 物化仍开放。
 
 ### P3 · 细节
 
@@ -538,5 +554,5 @@ CreateTrialTenant
 
 - **开工先问四件事**：框架与版本 / Node 版本 / 部署形态（同源 or 直连）/ 是否 React<18 —— 提前分流，避免 Phase 4 才发现装不上。
 - **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。
-- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane —— 命中即查表给原因 + 处置。
+- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane / `403 route not available on this host`（host× 受众双绑定，user 面路由误经 machine 入口）—— 命中即查表给原因 + 处置。
 - **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。
