@@ -148,7 +148,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 影响：任何按 skill 默认配置（hash 传输）的接入者，注册出的试用管理员用标准客户端流程**永远登录失败**；唯一可行登录法是知道 plain 传输这个非文档化偏方。且明文登录与租户自身 "hash" 策略相悖（见 C9）。
 - **处置（2026-10-10 实验内已实测对齐）**：以 plain 登录取令牌后调 `PUT /bff/identity/api/v1/auth/me/password`（服务端字段：`old_password`=原明文、`new_password`=`sha256hex(同一口令|tid)`、`password_transmission:"hash"`）→ 200 `password changed successfully`；随后 hash 登录 200 / plain 登录 401 `password content mismatch` —— 口令值不变，仅存储形从 argon2(明文) 翻转为 argon2(hash 摘要)，与租户策略对齐。脚本：`provision/admin-align-hash.mjs`（内含 SDK 形/服务端形双探针与对齐后验证）。
 - 注：无法用 `sdk.changePassword()` 完成此对齐——该 API 本身调不通（C11 字段名不符 → 400），只能手写请求体。
-- 产品侧修复建议：`RegisterTrialAdmin` 注册时携带 `password_transmission=hash` + 预哈希口令（参照 `service-identity/db/seeds/demo_accounts.go` 的 `PasswordTransmission: domain.TransmissionHash` 写法），从源头消除矛盾。
+- 产品侧修复建议：`RegisterTrialAdmin` 注册时携带 `password_transmission=hash` + 预哈希口令（参照 `service-identity/db/seeds/demo_accounts.go` 的 `PasswordTransmission: domain.TransmissionHash` 写法），从源头消除矛盾。→ 代码级根因闭环（两处"空串豁免"）见后文「深挖」节。
 
 ### C6 · initial_role=super_admin 被静默丢弃——试用管理员 0 RBAC 角色
 
@@ -157,7 +157,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 影响：代码注释"（含 super_admin 权限）"与事实不符；试用管理员即便登得进去也没有任何管理权限。
 - **2026-10-10 门户实测补证（升级为 P0 级阻断）**：C5 对齐后，admin.autional.com 登录链路（auth.autional.com/takenote-demo/login，请求头 `x-entry-plane: admin`）密码层已过（请求体内为正确 hash），随即被入口平面门禁拦死：**403 `40000503 entry plane not authorized`**（auth_login.go:668 → entry_plane_authz.go:47：admin 平面需 admin 类角色）。`check-role` 七码探针（super_admin / admin / security_admin / user_manager / auditor / member / tenant_admin）——**管理员与 takenote-alice 全部 false**：不只 initial_role 丢失，连 `member` 都不存在——该试用租户 RBAC 完全零播种（SDK 注册路径的默认角色亦未落地）。
 - 链条：C5 的 401 此前一直掩盖 C6 的 403；密码对齐后 403 成为可见阻断。
-- 影响升级：管理面门户（admin / security）对试用租户管理员**不可进入**，且无客户端自救路径（授予角色本身需管理面权限——鸡生蛋死结）；用户面登录层已验证可用（api 平面 200）。
+- 影响升级：管理面门户（admin / security）对试用租户管理员**不可进入**，且无客户端自救路径（授予角色本身需管理面权限——鸡生蛋死结）；用户面登录层已验证可用（api 平面 200）。→ 全链代码证据与修复设计（含存量播种方案）见后文「深挖」节。
 
 ### C7 · open 模式注册不写 tenant_members（成员列表为空）
 
@@ -185,7 +185,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 根因：服务端 DTO 字段为 `old_password` / `new_password`（dto/user.go:165-169，handler auth_password.go:90 绑定）；SDK 发 `current_password` / `password` —— 两个 required 字段全部落空。
 - 版本核对：装机版 = `npm view @autional/core version` = **0.3.0**（最新发布版），非旧版漂移。
 - 影响：`sdk.changePassword()` 对所有接入项目 100% 不可用；本实验的 C5 对齐只能手写请求体绕行。建议 SDK 改用 `old_password`/`new_password`（或服务端兼容别名，二者取一并写进契约）。
-- 附注：hash 模式下 `new_password` 须传**摘要**（64 hex；服务端 `min=8` 校验可过），「新口令先按策略处理」的语义只在 SDK 源码里，文档无述——手写调用者必须知道这一点。
+- 附注：hash 模式下 `new_password` 须传**摘要**（64 hex；服务端 `min=8` 校验可过），「新口令先按策略处理」的语义只在 SDK 源码里，文档无述——手写调用者必须知道这一点。→ 成因（双写契约 + 自证测试）与 symmetric/asymmetric 静默损坏（服务端改密链无解密阶段）见后文「深挖」节。
 
 ### C 组小结（对 AI 接入的启示）
 
@@ -392,6 +392,118 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 一天内两轮「全绿假象」：Phase 7 的 Node 8/8、代理探测的「200」——都被更真实的一层推翻（浏览器安全模型 / 响应体校验）。**接入验证的最后一跳必须是真浏览器。**
 - CORS 墙（D17）是本次实验**唯一 P0**：它不来自代码错误，而来自「skill 未文档化运行时安全模型」——老项目接入前不可预测、失败点最早、对用户最不友好。建议 skill 把「部署形态（同源反代 or CORS 白名单）」列为接入前置决策项。
 - D18/D19/D20 均为「文档只讲半程」型缺口（代理配置半程、会话生命周期半程、错误面处理半程）。
+
+## 深挖（2026-10-10 代码级）：C6 / C11 / C5 本质分析与修复设计
+
+> 方法：两侧源码对账。SDK 仓 `autional/sdk`（master 经 gh api 直读，本地无检出）；服务端本地工作区 `shared/service-identity`、`shared/service-rbac`、`shared/service-tenant`。每条含代码指针，可逐条复核。
+
+### 一句话本质
+
+| 项  | 本质模式            | 一句话                                                                          |
+| --- | ------------------- | ------------------------------------------------------------------------------- |
+| C6  | 意图黑洞 + 播种无主 | `initial_role` 从未被服务端"认识"；新租户 RBAC 在任何生命周期链路上无人负责播种 |
+| C11 | 双写契约 + 自证测试 | SDK 与服务端各写各的改密字段名；SDK 单测背书错误契约 → CI 永远绿，线上必 400    |
+| C5  | 语义豁免叠加        | 注册允许"不声明传输口径"（空串豁免）→ 库存明文；验证按字节精确比对 → 永远登不上 |
+
+共同结构：**同一事实的多个副本（文档 / SDK / 服务端 / 测试）之间没有任何机器对账**。
+
+### C6 深挖：死结的每一环（全链代码证据）
+
+```
+service-tenant                  service-identity                    service-rbac
+──────────────                  ────────────────                    ────────────
+CreateTrialTenant
+ ├ 建租户
+ ├ 建安全策略（仅此，无 RBAC 步骤）
+ └ RegisterTrialAdmin ──POST /auth/register──▶ RegisterRequest DTO
+    body 带 initial_role=super_admin           无该字段 → 静默丢弃
+    （client.go:113）                          （dto/auth_login.go:115-125）
+                                                 │
+                                      CreateUser 内 InitialRole 全逻辑存在
+                                      （建角色+绑定，user_service.go:663-695）
+                                      但 HTTP/gRPC 均无入口 → 仅 dev seed 触达
+                                                 │
+                                      ApplyDefaultRoles ──gRPC──▶ rbac_tenant_default_roles 空
+                                      （user_service.go:655）      → return 0, nil（不报错）
+                                                                   （rbac_service.go:1493-1499）
+```
+
+逐条事实：
+
+1. **发布方以为成功**：`RegisterTrialAdmin` 收到 200/201 即返回 nil（client.go:130-132）；调用方记日志 "trial admin created"（tenant_service.go:382）。"（含 super_admin 权限）"是注释里的美好愿望。
+2. **接收方不知情**：`Register` 用标准 `ShouldBindJSON`（auth_register.go:73）——未知键静默忽略；identity 全仓零 `initial_role` 处理（HTTP DTO 无、gRPC 无）。
+3. **兜底逻辑存在但断路**：identity 的 InitialRole 路径完整（查角色 → 缺则建 → `permanent` 绑定，user_service.go:663-695），当前唯一触达方是 **dev seed**（demo_accounts.go:155）——生产 HTTP 路径零触达。
+4. **默认角色同样空转**：`ApplyDefaultRoles` 查 rbac 的 `tenant_default_roles` 表 → 空 → `return 0, nil`。该表仅平台租户由种子写 2 行（guest / device_guest，platform_rbac.go:5）——**任何新租户都是 0 行**，member 也永远不会自动到手。
+5. **租户开通链无 RBAC 步骤**：CreateTrialTenant 只建安全策略（tenant_service.go:348-356）；管理面 CreateTenant 同构（注释自证"与管理面一致"）——开通路径全族同病。
+6. **兜底通道被门禁**：`POST /internal/rbac/bootstrap-admin` 仅 `APP_ENV=development` 可用（internal_handler.go:207，生产 403）。
+7. **跨租户护栏封死自救**：rbac 管理 API 三重要求——JWT 租户 == X-Tenant-ID（router.go:67）+ 本租户 admin 类角色（:70）+ `rbac:admin` 权限（:72）。0 角色租户内无人可调。
+8. **为什么"建角色"就够解锁**：`CheckPermission` 对 `super_admin`/`admin` 角色码有**全量旁路**（rbac_service.go:677-688）——最小播种 = 租户内建 super_admin 角色 + 绑定，**不需要权限行**；入口平面（同码表，entry_plane_authz.go）随之放行，门户全通。
+
+死结图（当前生产实测）：
+
+```
+管理员(0 角色) ──登录──▶ 403 entry plane not authorized
+     ▲                          │
+     │                          ▼
+  发角色需要                  发角色需要
+  管理面权限 ◀─────────────── 管理面入口
+        （鸡生蛋；当前唯一出口 = 平台侧 DB 播种）
+```
+
+修复设计（三层）：
+
+| 层                 | 动作                                                                                                                                                                                      | 覆盖                       | 成本                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | -------------------- |
+| 存量修复（本租户） | 平台侧播种：rbac 库 2 行——`rbac_roles` 建 super_admin 行 + `rbac_user_roles` 绑定管理员（可选：member 角色 + `rbac_tenant_default_roles` 行）                                             | takenote-demo 门户即刻解锁 | 生产 DML，按窗口纪律 |
+| 治本·最小          | identity `RegisterRequest` 补 `initial_role` + 映射进 `CreateUserRequest`；**仅限带 X-API-Key 的内部调用生效**（公开注册忽略该字段防提权；auth_register.go:107 已有内部调用判别先例）     | C6 主链                    | ~10 行 + 测试        |
+| 治本·完整          | rbac 新增内部 API `POST /internal/rbac/bootstrap-tenant`（API-key、幂等）：种 super_admin / admin / member + 默认角色行 + 可选 admin 绑定；service-tenant 开通链（试用 + 管理面）显式调用 | C6 + C7 全族、member 上线  | 中                   |
+| 防线               | 开通 E2E 断言：建租户 → 管理员 admin 平面登录 200 → `check-role super_admin` true → 普通账号 `check-role member` true                                                                     | 防复归                     | 小                   |
+
+> 注：identity InitialRole 路径若被触达会**自动建角色**（user_service.go:670），无需 rbac 预置；但角色无权限行（super_admin 旁路下不阻碍门户；如需权限列表完整，走完整方案）。
+
+### C11 深挖：错误的契约为什么能同时活过 CI 和评审
+
+证据对账表：
+
+| 副本                   | 字段名                                 | 指针                                       | 状态                        |
+| ---------------------- | -------------------------------------- | ------------------------------------------ | --------------------------- |
+| 服务端 DTO（真源）     | `old_password` / `new_password`        | dto/user.go:165-169                        | 权威（线上 400 报错名可证） |
+| SDK 实现               | `current_password` / `password`        | auth-client.ts:209-213（0.3.0 = 最新主干） | 错误                        |
+| SDK 单测               | 断言 `body.current_password`           | auth-client.test.ts:329-334                | **背书错误契约**            |
+| 门户前端（参考客户端） | 生成客户端 `HTTPChangePasswordRequest` | generated/api.ts:5412                      | 正确（从未走样）            |
+| 服务端兼容别名         | 全仓零 `current_password`              | 服务端 grep 实证                           | 无                          |
+
+结论：SDK 手写客户端独立演化；单测对着手写实现写——**只证明"实现符合自己的假设"，不证明"符合服务端"**。SDK 仓无跨边界契约校验（无对 identity OpenAPI 的机器对账、无真实服务端集成测试）。
+
+深一层（修复必须覆盖，否则修完仍是半修）：
+
+- **服务端改密链没有解密阶段**：`changePasswordCore` 直接 `verifyPassword(旧)` / `hashPassword(新)`（user_service.go:1519/1553），无 `preprocessPasswordForTransmission`（对比：登录链 :1243、建户链 :479 均有）。
+- **两层 DTO 均不收密钥交换字段**：`dto.ChangePasswordRequest` / `domain.ChangePasswordRequest` 都没有 `key_exchange_id` / `client_pub_key`（user.go:165-169 / 508-515）；SDK 却照发（auth-client.ts:214-215）——发到空气里。
+- **推论（symmetric / asymmetric 租户）**：即使字段名改对——旧口令密文比对必失败（表现成"原密码错"）；新口令密文被当明文哈希入库，且密文含随机 IV 每次不同 → **账号永久锁死**。"不是不可用，是危险地静默损坏"。
+- **同族漂移（注册链）**：HTTP 注册 DTO/handler 同样无密钥交换字段（auth_register.go:154-162 无 KeyExchangeID 映射）→ symmetric 租户的公共注册同病；SDK 注册也照发 key_exchange_id / client_pub_key（auth-client.ts:161-162）。
+
+修复设计：
+
+| 方案            | 内容                                                                                                                              | 适用                            | 取舍                            |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------------------- |
+| A（首选，最小） | SDK 改 `old_password` / `new_password`；单测断言同步改；发 0.3.1                                                                  | plain/hash 租户（当前现实全部） | 治本；不动服务端契约            |
+| B（完整）       | 服务端补全：DTO/domain/handler 加密钥交换字段 + `changePasswordCore` 前置解密（旧+新）；注册链同补                                | symmetric/asymmetric 租户       | 工作量中；需与 A 同发才真正可用 |
+| C（兜底防御）   | 服务端对不支持的模式**显式 400**（fail loud），替代当前"静默损坏"；plain/hash 照常                                                | 全部                            | 无论 A/B 是否落，建议都做       |
+| 防回归          | ① SDK CI 加契约对账（字段名对 identity OpenAPI schema 机器校验）或真实服务端集成测试；② 贡献指南写明"mock 型单测不得作为契约证据" | ——                              | "双写契约"模式的通用解药        |
+
+> 成因线索：SDK 注释自述"移植自 web/packages/shared/src/utils/password-transmission.ts"——只移植了加密模块；改密请求体是 SDK 作者手写的新代码，没有生成客户端可抄。
+
+### C5 根因闭环（补代码级链条）
+
+- **注册侧两处"空串豁免"**：handler 检查 `req.PasswordTransmission != "" &&` 才做策略比对（auth_register.go:140）→ 空串绕过；service 层同构（user_service.go:462）→ 空串跳过一致性校验。`RegisterTrialAdmin` 正好不声明（空串）→ 明文入库在 hash 策略租户内"合法化"。
+- **验证侧无策略换算**：`verifyPassword` 字节精确比对存储哈希（user_service.go:1519）→ 库是 argon2(明文)、客户端按策略送 hash → 必 401。
+- 两处豁免各自"为兼容历史"，叠加 = 死锁。**修复与 C6 同缝**：`RegisterTrialAdmin` 声明 `password_transmission=hash` + 预哈希（与 C5 建议同一处改）；或注册侧对非 plain 策略**拒绝空串**（收紧 auth_register.go:140 的豁免）。
+
+### 结构性教训（对产品的通用含义）
+
+1. **静默丢弃是本案大头**：C6 字段被丢、ApplyDefaultRoles 空表返回 0、服务端未知键忽略——"静默"让缺陷活到线上。建议公共 API 开 `DisallowUnknownFields`（或未知键告警）；内部调用链的"意图字段"必须有一端实现，另一端可测。
+2. **安全策略检查别留空串豁免**：策略有默认值时，空值要么等价显式默认、要么拒绝；不能当"跳过检查"。
+3. **新租户生命周期 checklist**（安全策略 / RBAC 播种 / 默认角色 / 成员物化）应有单源清单，所有开通路径共同遵守，并有 E2E 断言绑定。
 
 ## 给 Autional 团队的优化建议（2026-10-10 汇总）
 
