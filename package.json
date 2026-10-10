@@ -56,7 +56,8 @@
     ]
   },
   "overrides": {
-    "postcss": "^8.4.0"
+    "postcss": "^8.4.0",
+    "websocket-driver": "^0.7.4"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^1.4.0",
