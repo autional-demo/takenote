@@ -33,13 +33,13 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 
 ### 归因分类
 
-| 归因                                         | 项                                        | 要点                                                                    |
-| -------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------- |
-| 文档只讲半程 / 运行时模型未进材料            | D4 D5 D8 D13 D17 D18 D19 D20 · B2         | 部署形态（CORS/反代）、会话生命周期、错误面、镜像路径均无说明           |
-| SDK 实现缺陷（代码级）                       | D11 D12 D14 D15 D16 · C1 C6 C7 C9 C10 C11 | 驼峰租户键、无重试的 AuthClient、fire-and-forget 登出、改密字段名不符等 |
-| 服务端/部署缺陷                              | B1 · C3 C5                                | .com 站 references 区错配（cn/zh 内容）；邀请码无铸造 API               |
-| 基础设施抖动                                 | C8 · D16/D20 实测现象                     | 跨境链路 20-30% 5xx，经 SDK 冒泡为用户可见错误                          |
-| 环境年份差（非 skill 问题，但 skill 无预案） | A1-A4                                     | 老依赖 × 现代 Node，4 个阻断点                                          |
+| 归因                                         | 项                                        | 要点                                                                      |
+| -------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
+| 文档只讲半程 / 运行时模型未进材料            | D4 D5 D8 D13 D17 D18 D19 D20 · B2         | 部署形态（CORS/反代）、会话生命周期、错误面、镜像路径均无说明             |
+| SDK 实现缺陷（代码级）                       | D11 D12 D14 D15 D16 · C1 C6 C7 C9 C10 C11 | 驼峰租户键、无重试的 AuthClient、fire-and-forget 登出、改密字段名不符等   |
+| 服务端/部署缺陷                              | B1✅ · C3 C5                              | .com 站 references 区错配（cn/zh 内容）✅ 已修（10-10）；邀请码无铸造 API |
+| 基础设施抖动                                 | C8 · D16/D20 实测现象                     | 跨境链路 20-30% 5xx，经 SDK 冒泡为用户可见错误                            |
+| 环境年份差（非 skill 问题，但 skill 无预案） | A1-A4                                     | 老依赖 × 现代 Node，4 个阻断点                                            |
 
 ## 环境与基线
 
@@ -102,7 +102,8 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 
 - 影响：按 skill 指引（"只从 canonical domain 抓取相关文件"）执行的 AI agent 会拿到中文内容 + .cn endpoint 配置——若照用，开发者应用的 issuer 将指向错误区域，OIDC discovery 失败或跨区混乱。
 - 绕行（本次实验采用）：references 改用 CDN 镜像版本 `https://cdn.autional.com/ai/latest/references/*`（核验为正确 com/en 版）。
-- 疑因：.com 站构建产物中 references 资产引用了 .cn 的生成结果（生成器 core@f495cd50f8cc 同源，疑似部署/产物装配时区混用）。
+- 根因（2026-10-10 证实）：**单仓双区拓扑**——github.com:autional/web 单仓同时构建 .com/.cn 两站（双 Vercel 项目），而 `public/ai/references/` 只有**单份**入仓文件（cn 变体，`region: cn`）服务双站；com 站构建时根本没有 com 版可落位（非"部署时区混用"，是产物装配缺失）。
+- 处置（2026-10-10 已修复上线，web `5e9c67b`）：入仓镜像按区命名（`*.com.md` / `*.cn.md`）+ gen-static 构建期按 `REGION` 落位无名版（`public/ai/references/*.md` 转为生成物）+ 双守卫（skill frontmatter 区/lang、references 首行区标记，不符即拒构建）。线上复验（cache-buster + 落盘 sha256）：`www.autional.com/ai/references/*` = com 版（`b8669366…`/`ed918832…`，`issuer: api.autional.com`）；`www.autional.cn/ai/references/*` = cn 版（`79b30207…`/`ec0b6a2b…`，`issuer: api.autional.cn`）——与 CDN 版本逐字节一致。
 
 ### B2 · fallback 链路对 references 的指引缺失
 
@@ -550,7 +551,7 @@ CreateTrialTenant
 
 ### P0 · 主链路走不通
 
-1. **修 .com 站 references 区错配**（B1）—— 2026-10-10 复测仍在：`https://www.autional.com/ai/references/config-template.md` 头注明 `region: cn · lang: zh`，issuer=`api.autional.cn`。修产物装配，并在发布管线加「区/lang 一致性」自动校验。
+1. **修 .com 站 references 区错配**（B1）—— 2026-10-10 复测仍在：`https://www.autional.com/ai/references/config-template.md` 头注明 `region: cn · lang: zh`，issuer=`api.autional.cn`。修产物装配，并在发布管线加「区/lang 一致性」自动校验。→ **2026-10-10 已修复上线**（web `5e9c67b`：构建期按区落位 + 双守卫；线上复验 com 站 = com 版，`issuer: api.autional.com`）。
 2. **统一管理员密码传输口径（C5）+ 试用租户 RBAC 播种（C6）** —— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上（实验内已用改密对齐，见 C5）；且试用租户 RBAC 零播种 → 管理面门户 403 不可进。修 C5 时一并让注册链路的 `initial_role` 真正生效。→ **2026-10-10 已产品侧落地并部署 dev**（注册走 hash 传输 + 试用链补 RBAC 播种 + `initial_role` 通道；真机 E2E 9/9 绿）。
 3. **补「部署形态」决策章**（D17）—— 浏览器端按 skill 配置 100% 被 CORS 拒。前置「同源反代（推荐，SDK 已内建代理模式）vs CORS 白名单」二选一，给 dev 代理 + 生产反代样例；失败处置表收录 CORS 特征串。
 4. **配置模板三处修正**（D1/D2/D3/D12）—— apiUrl 必须含 `/bff`；tenantId 传递方式（React provider 无此字段；register 需经 http 适配器注入 `X-Tenant-ID`，否则静默落到错误租户）；appId 无创建路径时的「置空 + 预期警告」指引。
@@ -578,4 +579,4 @@ CreateTrialTenant
 - **开工先问五件事**：框架与版本 / Node 版本 / 部署形态（同源 or 直连）/ 是否 React<18 / **应用数据存哪、是否按用户隔离**（换账号 / 换设备分别看到什么）—— 提前分流，避免 Phase 4 才发现装不上、收尾才发现数据面无隔离。
 - **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。
 - **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane / `403 route not available on this host`（host× 受众双绑定，user 面路由误经 machine 入口）—— 命中即查表给原因 + 处置。
-- **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。
+- **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。→ 2026-10-10 落地上线：构建期按区落位 + 双守卫（见 B1 处置），站间 diff 校验由「按区命名镜像 + 区标记守卫」等价覆盖。
