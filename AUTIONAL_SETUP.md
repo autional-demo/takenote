@@ -55,6 +55,6 @@
 
 ## Reminders
 
-1. Admin password stored separately (shown once) — not in this file.
+1. All credentials (test accounts, tenant admin, mailbox) are recorded outside the repository (`provision/` on the local machine) — not in this file.
 2. `.env` is gitignored in this repo (the template calls it "safe to commit").
 3. Full problem log with evidence: `AI-ONBOARDING-NOTES.md` (sections A–D + Phase 7).

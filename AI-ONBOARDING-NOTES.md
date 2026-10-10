@@ -6,7 +6,7 @@
 ## 总览（结论先行）2026-10-10
 
 - **结论**：skill 可完成接入（本 fork Phase 0-8 走通、单测 128 例绿、浏览器 E2E 全绿），但**浏览器端按 skill 原样配置 100% 被 CORS 墙阻断（D17）**——这是唯一流程级 P0；另有 2 个 P0 配置陷阱（D1/D2，照抄模板必踩）。
-- **问题总量 36 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 10（全部线上实证）+ D 依赖/配置/运行时 20。
+- **问题总量 37 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 11（全部线上实证）+ D 依赖/配置/运行时 20。
 
 ### 严重度分布（D 组 20 项）
 
@@ -17,12 +17,12 @@
 | P2   | 9    | D4 · D5 · D8 · D10 · D13 · D16 · D18 · D19 · D20                                  |
 | P3   | 4    | D7 · D11 · D14 · D15                                                              |
 
-（C 组另含 P0 一项：C5 试用管理员密码传输口径自相矛盾——按 skill 流程永远登不上。）
+（C 组另含 P0 两项：C5 试用管理员密码传输口径自相矛盾——2026-10-10 已实测对齐；C6 试用租户 RBAC 零播种——管理面门户 403 不可进。另有 C11：SDK changePassword 字段名与服务端不符，调用必 400。）
 
 ### 过程一图
 
 ```
-Phase 0-1 调研/租户   ── C 组 10 项（邀请码无铸造 API、试用管理员死结等）
+Phase 0-1 调研/租户   ── C 组 11 项（邀请码无铸造 API、试用管理员死结等）
 Phase 2-3 租户/账号   ── C5 P0：管理员登录按 skill 口径必失败（实测绕行）
 Phase 4   依赖/配置   ── D1/D2 P0 配置陷阱 + D3-D13（照抄模板不可用）
 Phase 5-6 构建/单测   ── 29 套件 / 128 用例 绿
@@ -33,13 +33,13 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 
 ### 归因分类
 
-| 归因                                         | 项                                    | 要点                                                          |
-| -------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- |
-| 文档只讲半程 / 运行时模型未进材料            | D4 D5 D8 D13 D17 D18 D19 D20 · B2     | 部署形态（CORS/反代）、会话生命周期、错误面、镜像路径均无说明 |
-| SDK 实现缺陷（代码级）                       | D11 D12 D14 D15 D16 · C1 C6 C7 C9 C10 | 驼峰租户键、无重试的 AuthClient、fire-and-forget 登出等       |
-| 服务端/部署缺陷                              | B1 · C3 C5                            | .com 站 references 区错配（cn/zh 内容）；邀请码无铸造 API     |
-| 基础设施抖动                                 | C8 · D16/D20 实测现象                 | 跨境链路 20-30% 5xx，经 SDK 冒泡为用户可见错误                |
-| 环境年份差（非 skill 问题，但 skill 无预案） | A1-A4                                 | 老依赖 × 现代 Node，4 个阻断点                                |
+| 归因                                         | 项                                        | 要点                                                                    |
+| -------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------- |
+| 文档只讲半程 / 运行时模型未进材料            | D4 D5 D8 D13 D17 D18 D19 D20 · B2         | 部署形态（CORS/反代）、会话生命周期、错误面、镜像路径均无说明           |
+| SDK 实现缺陷（代码级）                       | D11 D12 D14 D15 D16 · C1 C6 C7 C9 C10 C11 | 驼峰租户键、无重试的 AuthClient、fire-and-forget 登出、改密字段名不符等 |
+| 服务端/部署缺陷                              | B1 · C3 C5                                | .com 站 references 区错配（cn/zh 内容）；邀请码无铸造 API               |
+| 基础设施抖动                                 | C8 · D16/D20 实测现象                     | 跨境链路 20-30% 5xx，经 SDK 冒泡为用户可见错误                          |
+| 环境年份差（非 skill 问题，但 skill 无预案） | A1-A4                                     | 老依赖 × 现代 Node，4 个阻断点                                          |
 
 ## 环境与基线
 
@@ -109,7 +109,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - skill.md 的 fallback 条款只给 SKILL.md 自身的 CDN 镜像地址，未给 references 的镜像路径；同时 boundaries 规则限制"只从本区 canonical domain 抓取"。若 .com 站整体不可达，AI 将无法合法获取 references（实际上 CDN 有 `/ai/latest/references/` 镜像，但指引中不存在）。
 - 影响：降级场景下接入流程会中断（无明示的合法路径）。
 
-## C. 租户与账号（Phase 2-3 执行期间发现，全部线上实证）
+## C. 租户与账号（Phase 2-3 执行期间 + 2026-10-10 补测，全部线上实证）
 
 > 口径：本节全部结论来自 2026-10-10 对生产 API（api.autional.com → 跨境中转 → 云机）与云库（autional_tenant / autional_identity / autional_rbac）的实测。租户 = `takenote-demo`（`01M4J4BF8M2WQCTGVS2S0T9024`）。
 
@@ -146,12 +146,18 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 现象（实测）：注册时设定的管理员密码，按 **hash 模式**（`sha256hex(pwd|tenantId)`）登录 → `401 password content mismatch`（61000104）；改按 **plain 明文**登录 → **200 成功**。
 - 根因（代码证据）：tenant-service 的 `RegisterTrialAdmin` 调身份服务公共 `/auth/register` 时**不传 `password_transmission`**（client.go:109-114，raw 明文入 body）→ 身份服务按"明文输入"做 argon2 落库；而租户密码策略默认 **hash 模式**（service-identity security_policy.go:120 全局回退 `TransmissionHash`），SDK/skill 按 hash 计算 —— 两端对不上。
 - 影响：任何按 skill 默认配置（hash 传输）的接入者，注册出的试用管理员用标准客户端流程**永远登录失败**；唯一可行登录法是知道 plain 传输这个非文档化偏方。且明文登录与租户自身 "hash" 策略相悖（见 C9）。
+- **处置（2026-10-10 实验内已实测对齐）**：以 plain 登录取令牌后调 `PUT /bff/identity/api/v1/auth/me/password`（服务端字段：`old_password`=原明文、`new_password`=`sha256hex(同一口令|tid)`、`password_transmission:"hash"`）→ 200 `password changed successfully`；随后 hash 登录 200 / plain 登录 401 `password content mismatch` —— 口令值不变，仅存储形从 argon2(明文) 翻转为 argon2(hash 摘要)，与租户策略对齐。脚本：`provision/admin-align-hash.mjs`（内含 SDK 形/服务端形双探针与对齐后验证）。
+- 注：无法用 `sdk.changePassword()` 完成此对齐——该 API 本身调不通（C11 字段名不符 → 400），只能手写请求体。
+- 产品侧修复建议：`RegisterTrialAdmin` 注册时携带 `password_transmission=hash` + 预哈希口令（参照 `service-identity/db/seeds/demo_accounts.go` 的 `PasswordTransmission: domain.TransmissionHash` 写法），从源头消除矛盾。
 
 ### C6 · initial_role=super_admin 被静默丢弃——试用管理员 0 RBAC 角色
 
 - 现象（DB 实证）：4 个用户（管理员 + 3 测试账号）在 `rbac_user_roles` / `rbac_user_permissions` **零绑定**。
 - 根因（代码证据）：`RegisterTrialAdmin` 的 body 带 `"initial_role":"super_admin"`（client.go:113），但身份服务 `RegisterRequest` DTO（dto.go:118-126）**没有该字段**，反序列化静默忽略 → 权限意图丢失。
 - 影响：代码注释"（含 super_admin 权限）"与事实不符；试用管理员即便登得进去也没有任何管理权限。
+- **2026-10-10 门户实测补证（升级为 P0 级阻断）**：C5 对齐后，admin.autional.com 登录链路（auth.autional.com/takenote-demo/login，请求头 `x-entry-plane: admin`）密码层已过（请求体内为正确 hash），随即被入口平面门禁拦死：**403 `40000503 entry plane not authorized`**（auth_login.go:668 → entry_plane_authz.go:47：admin 平面需 admin 类角色）。`check-role` 七码探针（super_admin / admin / security_admin / user_manager / auditor / member / tenant_admin）——**管理员与 takenote-alice 全部 false**：不只 initial_role 丢失，连 `member` 都不存在——该试用租户 RBAC 完全零播种（SDK 注册路径的默认角色亦未落地）。
+- 链条：C5 的 401 此前一直掩盖 C6 的 403；密码对齐后 403 成为可见阻断。
+- 影响升级：管理面门户（admin / security）对试用租户管理员**不可进入**，且无客户端自救路径（授予角色本身需管理面权限——鸡生蛋死结）；用户面登录层已验证可用（api 平面 200）。
 
 ### C7 · open 模式注册不写 tenant_members（成员列表为空）
 
@@ -173,12 +179,20 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 
 - password-transmission.ts:7 注释写 `SHA-256(password + tenantId)`，实现是 `rawPassword + '|' + policy.tenantId`（:57）。照注释手写实现会 401。SDK 测试文件（password-transmission.test.ts:50）用的才是正确带 `|` 的表述。
 
+### C11 · `sdk.changePassword()` 字段名与服务端不符——调用必 400（P1，线上实测）
+
+- 现象（线上 400 实证）：按 SDK 原样调用（请求体 `{current_password, password, password_transmission}`，auth-client.ts:209-213）→ `400`："Key: 'ChangePasswordRequest.OldPassword' Error:Field validation for 'OldPassword' failed on the 'required' tag" + 同型 NewPassword 错误。
+- 根因：服务端 DTO 字段为 `old_password` / `new_password`（dto/user.go:165-169，handler auth_password.go:90 绑定）；SDK 发 `current_password` / `password` —— 两个 required 字段全部落空。
+- 版本核对：装机版 = `npm view @autional/core version` = **0.3.0**（最新发布版），非旧版漂移。
+- 影响：`sdk.changePassword()` 对所有接入项目 100% 不可用；本实验的 C5 对齐只能手写请求体绕行。建议 SDK 改用 `old_password`/`new_password`（或服务端兼容别名，二者取一并写进契约）。
+- 附注：hash 模式下 `new_password` 须传**摘要**（64 hex；服务端 `min=8` 校验可过），「新口令先按策略处理」的语义只在 SDK 源码里，文档无述——手写调用者必须知道这一点。
+
 ### C 组小结（对 AI 接入的启示）
 
-- C5/C6 是**功能性阻断**：按 skill 流程建出的"管理员"登不上（hash 流）、且无权限——这两个缺陷叠加，[B] 路径在"注册之后"的部分实际不可用。
+- C5/C6 是**功能性阻断**：按 skill 流程建出的"管理员"登不上（hash 流）、且无权限——两个缺陷叠加，[B] 路径在"注册之后"实际不可用（C5 实验内已对齐；C6 仍开放 → 管理面门户 403 不可进）。
 - C1/C3 是**能力面缺口**：SDK 不支持邀请码注册；平台无发码工具——[B] 路径两端的工具链都缺，接入者被夹在中间。
 - C2/C4/C9 是**语义/口径不一致**：文档说永久/示例名可用/策略强制，实现说试用/部分名保留/仅注册侧强制。
-- 接入建议（本实验实际采取的绕行）：直连 REST（正确 /bff 路径）完成租户与账号生命周期；账号用非保留名；hash 约定以 SDK 实现（带 `|`）为准；管理员登录暂记 plain 偏方；脚本一律带 5xx 重试。
+- 接入建议（本实验实际采取的绕行）：直连 REST（正确 /bff 路径）完成租户与账号生命周期；账号用非保留名；hash 约定以 SDK 实现（带 `|`）为准；管理员口令先按 plain 登录取令牌、再经改密对齐到 hash（勿用 SDK changePassword，见 C11）；脚本一律带 5xx 重试。
 
 ## D. 依赖与配置阶段（Phase 4 执行期间发现，2026-10-10）
 
@@ -381,12 +395,12 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 
 ## 给 Autional 团队的优化建议（2026-10-10 汇总）
 
-> 依据 = 本文件 36 项问题日志。优先级：P0 = 真实用户按 skill 流程走不通；P1 = 能走通但必踩坑；P2/P3 = 体验与健壮性。
+> 依据 = 本文件 37 项问题日志。优先级：P0 = 真实用户按 skill 流程走不通；P1 = 能走通但必踩坑；P2/P3 = 体验与健壮性。
 
 ### P0 · 主链路走不通
 
 1. **修 .com 站 references 区错配**（B1）—— 2026-10-10 复测仍在：`https://www.autional.com/ai/references/config-template.md` 头注明 `region: cn · lang: zh`，issuer=`api.autional.cn`。修产物装配，并在发布管线加「区/lang 一致性」自动校验。
-2. **统一管理员密码传输口径**（C5）—— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上。注册链路与登录链路必须同一口径。
+2. **统一管理员密码传输口径（C5）+ 试用租户 RBAC 播种（C6）** —— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上（实验内已用改密对齐，见 C5）；且试用租户 RBAC 零播种 → 管理面门户 403 不可进。修 C5 时一并让注册链路的 `initial_role` 真正生效。
 3. **补「部署形态」决策章**（D17）—— 浏览器端按 skill 配置 100% 被 CORS 拒。前置「同源反代（推荐，SDK 已内建代理模式）vs CORS 白名单」二选一，给 dev 代理 + 生产反代样例；失败处置表收录 CORS 特征串。
 4. **配置模板三处修正**（D1/D2/D3/D12）—— apiUrl 必须含 `/bff`；tenantId 传递方式（React provider 无此字段；register 需经 http 适配器注入 `X-Tenant-ID`，否则静默落到错误租户）；appId 无创建路径时的「置空 + 预期警告」指引。
 
@@ -395,21 +409,22 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 5. **新增「会话生命周期」步骤**（D19）—— 登录 / 登出 / 多标签联动 / 过期四项验收；明示「登出必须调用 SDK logout，只清应用态 = 登出失效」。
 6. **新增「老项目可运行性预检」**（A1-A4）—— 2020 老栈 × 现代 Node 四类阻断（node-sass / md4 / postcss exports / websocket-driver）检查清单与处置；React<18 项目 `--legacy-peer-deps` 指引（D6）；TS 项目工具链一致性说明（D9）。
 7. **验证纪律升级**（Phase 8 教训）—— ① 浏览器 E2E 设为必过项（Node 集成 PASS ≠ 浏览器可用）；② 代理/网关验证必须核响应体（200 可能是 SPA 回退）。两条写进 skill 验证章。
+8. **SDK `changePassword` 字段名对齐**（C11）—— SDK 发 `current_password`/`password`、服务端收 `old_password`/`new_password`，线上必 400；SDK 改名（首选）或服务端兼容别名，并注明 hash 模式下新口令传摘要。
 
 ### P2 · 体验与健壮性
 
-8. **错误面归一化**（D16/D20）—— SDK http 适配器对非 JSON 响应归一为「网关/网络错误」；AuthClient 复用 ApiClient 的重试/退避，或 skill 标注「哪层已重试、哪层没有」。
-9. **公开 API 修正**（D14/D15）—— facade 无 `refreshToken()`；`logout()` 为 fire-and-forget（Promise 完成 ≠ 服务端撤销完成），文档写明。
-10. **fallback 条款补 references 的 CDN 镜像路径**（B2）。
-11. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。
+9. **错误面归一化**（D16/D20）—— SDK http 适配器对非 JSON 响应归一为「网关/网络错误」；AuthClient 复用 ApiClient 的重试/退避，或 skill 标注「哪层已重试、哪层没有」。
+10. **公开 API 修正**（D14/D15）—— facade 无 `refreshToken()`；`logout()` 为 fire-and-forget（Promise 完成 ≠ 服务端撤销完成），文档写明。
+11. **fallback 条款补 references 的 CDN 镜像路径**（B2）。
+12. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。
 
 ### P3 · 细节
 
-12. RequireAuth 区分「未登录 vs 角色不足」（D7）· stale-user 过期回退（D10）· logout 清理正确 storage 键（D11）· RegisterRequest 类型补 `invitation_code`（D13）。
+13. RequireAuth 区分「未登录 vs 角色不足」（D7）· stale-user 过期回退（D10）· logout 清理正确 storage 键（D11）· RegisterRequest 类型补 `invitation_code`（D13）。
 
 ### 结构性建议（prompt 设计）
 
 - **开工先问四件事**：框架与版本 / Node 版本 / 部署形态（同源 or 直连）/ 是否 React<18 —— 提前分流，避免 Phase 4 才发现装不上。
 - **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。
-- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 —— 命中即查表给原因 + 处置。
+- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane —— 命中即查表给原因 + 处置。
 - **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。
