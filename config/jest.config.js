@@ -7,6 +7,7 @@ module.exports = {
     '^.+\\.tsx?$': 'ts-jest',
     '\\.(html|xml|txt|md)$': 'jest-raw-loader',
   },
+  setupFiles: ['<rootDir>/tests/setup.polyfills.ts'],
   setupFilesAfterEnv: ['@testing-library/jest-dom', 'jest-extended'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
   moduleNameMapper: {

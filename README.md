@@ -276,6 +276,14 @@ Thanks goes to these wonderful people:
 
 <!-- ALL-CONTRIBUTORS-LIST:END -->
 
+## Autional integration (fork)
+
+This fork adds an [Autional](https://www.autional.com) identity integration on top of the original demo app: a login page at `/login` and a `RequireAuth` guard on `/app`, with tenant `takenote-demo` and SHA-256 password transmission.
+
+- Setup details and portal links: [`AUTIONAL_SETUP.md`](AUTIONAL_SETUP.md)
+- What changed in this fork: [`AUTIONAL_CHANGES.md`](AUTIONAL_CHANGES.md)
+- Full onboarding problem log (the point of this fork): [`AI-ONBOARDING-NOTES.md`](AI-ONBOARDING-NOTES.md)
+
 ## Acknowledgements
 
 - A big thank you to [David Bock](https://dkbock.com/) for logo design.

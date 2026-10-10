@@ -9,8 +9,22 @@ import { App } from '@/containers/App'
 import rootSaga from '@/sagas'
 import rootReducer from '@/slices'
 import history from '@/utils/history'
+import { AutionalProvider, autionalConfig, useAutional, setAutionalSessionEnd } from '@/autional'
 
 import '@/styles/index.scss'
+
+// Publishes the SDK logout to non-React code (the logout saga) — notes D19.
+const AutionalSessionBridge: React.FC = () => {
+  const { logout } = useAutional()
+
+  React.useEffect(() => {
+    setAutionalSessionEnd(logout)
+
+    return () => setAutionalSessionEnd(null)
+  }, [logout])
+
+  return null
+}
 
 const sagaMiddleware = createSagaMiddleware()
 const store = configureStore({
@@ -22,10 +36,13 @@ const store = configureStore({
 sagaMiddleware.run(rootSaga)
 
 render(
-  <Provider store={store}>
-    <Router history={history}>
-      <App />
-    </Router>
-  </Provider>,
+  <AutionalProvider config={autionalConfig}>
+    <AutionalSessionBridge />
+    <Provider store={store}>
+      <Router history={history}>
+        <App />
+      </Router>
+    </Provider>
+  </AutionalProvider>,
   document.getElementById('root')
 )

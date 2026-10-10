@@ -1,7 +1,8 @@
-import { all, put, takeLatest, select } from 'redux-saga/effects'
+import { all, call, put, takeLatest, select } from 'redux-saga/effects'
 import dayjs from 'dayjs'
 import axios from 'axios'
 
+import { endAutionalSession } from '@/autional'
 import { requestCategories, requestNotes, requestSettings, saveState, saveSettings } from '@/api'
 import { loadCategories, loadCategoriesError, loadCategoriesSuccess } from '@/slices/category'
 import { loadNotes, loadNotesError, loadNotesSuccess } from '@/slices/note'
@@ -23,7 +24,7 @@ import { getSettings } from '@/selectors'
 const isDemo = process.env.DEMO
 
 // Hit the Express endpoint to get the current GitHub user from the cookie
-function* loginUser() {
+function* loginUser(): Generator<any, any, any> {
   try {
     if (isDemo) {
       yield put(loginSuccess({ name: 'Demo User' }))
@@ -38,9 +39,11 @@ function* loginUser() {
 }
 
 // Remove the access token cookie from Express
-function* logoutUser() {
+function* logoutUser(): Generator<any, any, any> {
   try {
     if (isDemo) {
+      // Redux-only logout left the Autional session alive (notes D19).
+      yield call(endAutionalSession)
       yield put(logoutSuccess())
     } else {
       yield axios('/api/auth/logout')
@@ -53,7 +56,7 @@ function* logoutUser() {
 }
 
 // Get notes from API
-function* fetchNotes() {
+function* fetchNotes(): Generator<any, any, any> {
   let data
   try {
     if (isDemo) {
@@ -70,7 +73,7 @@ function* fetchNotes() {
 }
 
 // Get categories from API
-function* fetchCategories() {
+function* fetchCategories(): Generator<any, any, any> {
   let data
   try {
     if (isDemo) {
@@ -86,7 +89,7 @@ function* fetchCategories() {
 }
 
 // Get settings from API
-function* fetchSettings() {
+function* fetchSettings(): Generator<any, any, any> {
   let data
   try {
     data = yield requestSettings()
@@ -97,7 +100,7 @@ function* fetchSettings() {
   }
 }
 
-function* syncData({ payload }: SyncAction) {
+function* syncData({ payload }: SyncAction): Generator<any, any, any> {
   try {
     if (isDemo) {
       yield saveState(payload)
@@ -110,7 +113,7 @@ function* syncData({ payload }: SyncAction) {
   }
 }
 
-function* syncSettings() {
+function* syncSettings(): Generator<any, any, any> {
   try {
     const settings = yield select(getSettings)
 
@@ -119,7 +122,7 @@ function* syncSettings() {
 }
 
 // If any of these functions are dispatched, invoke the appropriate saga
-function* rootSaga() {
+function* rootSaga(): Generator<any, any, any> {
   yield all([
     takeLatest(login.type, loginUser),
     takeLatest(logout.type, logoutUser),

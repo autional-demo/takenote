@@ -4,9 +4,11 @@ import { Route, Switch, Redirect } from 'react-router-dom'
 import { Helmet, HelmetProvider } from 'react-helmet-async'
 
 import { LandingPage } from '@/components/LandingPage'
+import { AutionalLogin } from '@/components/AutionalLogin'
 import { TakeNoteApp } from '@/containers/TakeNoteApp'
 import { PublicRoute } from '@/router/PublicRoute'
 import { PrivateRoute } from '@/router/PrivateRoute'
+import { RequireAuth } from '@/autional'
 import { getAuth } from '@/selectors'
 import { login } from '@/slices/auth'
 
@@ -56,10 +58,19 @@ export const App: React.FC = () => {
       </Helmet>
 
       <Switch>
+        <Route exact path="/login" component={AutionalLogin} />
+
         {isDemo ? (
           <>
             <Route exact path="/" component={LandingPage} />
-            <Route path="/app" component={TakeNoteApp} />
+            <Route
+              path="/app"
+              render={() => (
+                <RequireAuth fallback={<Redirect to="/login" />}>
+                  <TakeNoteApp />
+                </RequireAuth>
+              )}
+            />
           </>
         ) : (
           <>

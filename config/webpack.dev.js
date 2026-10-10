@@ -27,6 +27,10 @@ module.exports = merge(common, {
     historyApiFallback: true,
     proxy: {
       '/api': 'http://localhost:5000',
+      // Autional calls are same-origin through this proxy (notes D17): direct
+      // cross-origin browser calls are CORS-blocked for non-allowlisted origins.
+      '/bff': { target: 'https://api.autional.com', changeOrigin: true },
+      '/.well-known': { target: 'https://api.autional.com', changeOrigin: true },
     },
     open: true,
     compress: true,
