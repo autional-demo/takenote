@@ -5,8 +5,9 @@
 
 ## 总览（结论先行）2026-10-10
 
-- **结论**：skill 可完成接入（本 fork Phase 0-8 走通、单测 128 例绿、浏览器 E2E 全绿），但**浏览器端按 skill 原样配置 100% 被 CORS 墙阻断（D17）**——这是唯一流程级 P0；另有 2 个 P0 配置陷阱（D1/D2，照抄模板必踩）。
+- **结论**：skill 可完成接入（本 fork Phase 0-8 走通、单测 128 例绿、浏览器 E2E 全绿），但**浏览器端按 skill 原样配置 100% 被 CORS 墙阻断（D17）**——这是唯一流程级 P0（**当日已产品侧根治**：oauth 动态 CORS + SDK SSO 重写，见「根治」节）；另有 2 个 P0 配置陷阱（D1/D2，照抄模板必踩）。
 - **问题总量 37 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 11（全部线上实证）+ D 依赖/配置/运行时 20。
+- **2026-10-11 增补（SSO 线实证）**：dev E2E 三腿全绿（CLI 18/18 + 浏览器 12/12 + 线上 9/9）期间又挖出 **T7**（refresh 契约缺陷，已修 `1950a7d`）与 **T8**（公开客户端同意提交链断裂，已修 + 部署拓扑纠正——线上自 09-29 已是 fetch，无此缺陷）；另留档 **device authorize 双 gap + PAR 多层缺陷链 + atob/base64url 观察项**（见「SSO 接入线实证」节）。
 
 ### 严重度分布（D 组 20 项）
 
@@ -370,6 +371,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 影响：接入方在域名获批前浏览器端 0 可用；失败发生在登录第一跳，错误信息面向开发者、终端用户无从自查。
 - 绕行：同源 dev 代理（上表两处配置）。生产形态应二选一：域名加白名单，或前端同源自反代。
 - 未做：白名单自助配置路径验证（skill/开发者门户均未见入口，未进一步深挖）。
+- **根治（2026-10-10 当日）**：四层断点全修（core 空头 / 网关白名单 / oauth 动态 CORS / 注册数据链）+ SDK SSO 全链重写——应用登记 redirect_uri + cors_origins 即可浏览器直连（代理模式保留可选）。详见后文「根治」节。
 
 ### D18 · SDK discovery 的代理模式对相对 apiUrl 静默降级（P2，代码级 + 实测踩中）
 
@@ -522,6 +524,175 @@ CreateTrialTenant
 2. **安全策略检查别留空串豁免**：策略有默认值时，空值要么等价显式默认、要么拒绝；不能当"跳过检查"。
 3. **新租户生命周期 checklist**（安全策略 / RBAC 播种 / 默认角色 / 成员物化）应有单源清单，所有开通路径共同遵守，并有 E2E 断言绑定。
 
+## 根治（2026-10-10 当日）：形态 2「用 Autional 登录」+ CORS 墙四层断点
+
+> 拍板形态 2：应用「用 Autional 登录」→ Autional 当 IdP（授权码 + PKCE 强制）。放弃逐客户接社交 IdP——每客户独立接 Google/微信等的路径不可规模化。本线 = SDK OAuth 方法重写对齐 SSO + CORS 四层断点根治 + skill 接入步骤（5.2b）+ 客户端注册数据链修复。通用目标：任何系统（SPA / 有后端应用 / 移动端）可接入，可用性、方便性、稳定性、安全性四维保障。
+
+### 结论先行
+
+| 断言                                                                      | 依据                                                                             |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| CORS 墙（D17）根因 = **四层断点叠加**，非单点配置                         | 代码级逐层追踪（下表）；空头污染与白名单两层不修，后两层修上也白修——四层全修才通 |
+| 修复后应用**只需登记两样**（redirect_uri + cors_origins），浏览器直连可用 | oauth 动态 CORS，登记后 TTL 60s 生效；无需自建代理                               |
+| 社交登录在 IdP 侧配置**一次**                                             | 形态 2 的 IdP 汇聚语义                                                           |
+| SDK 原 OAuth 方法**必被服务端拒**（换票缺 client_id + code_verifier）     | 本次全链重写                                                                     |
+
+### 四层断点与修复（逐层）
+
+```
+浏览器应用 origin ──▶ ①网关（core security.CORS）──▶ ④oauth 动态 CORS ──▶ 应答
+
+断点①  core CORS：origin 未命中白名单 → Set 空 ACAO 头后放行
+        → 空头与下游注入头并存 = 多值头 → 浏览器拒收；且阻断下游动态应答路径
+修复    micro-middleware/security/cors.go：未命中不注入任何头、直接放行
+        （OPTIONS 同样透传，由下游动态 CORS 就地应答 204）
+        ⚠ 网关的 gin_pkg.WithCORS 只是该中间件的薄包装（stack.go:49 委派
+          security_mw.CORS）——单点修复覆盖网关全链
+断点②  网关白名单（cors.allow_origins）= 部署注入的门户域
+        → 第三方应用 origin 永不在列
+修复    无需改网关配置：断点①修好后未命中即透传，由下游（oauth）动态应答
+断点③  oauth 客户端 cors_origins 字段「存而不用」（无消费端）
+修复    新增 OriginRegistry（全客户端 cors_origins 并集；TTL 60s 惰性刷新、
+        失败保留旧快照）+ DynamicCORS（命中回显精确 origin + Vary: Origin；
+        OPTIONS 预检就地 204；未命中/无 Origin 透传）
+断点④  客户端注册请求 DTO 无 cors_origins 字段 + handler 不映射
+        → 数据入口就断（登记了也存不进库）
+修复    dto.go 加字段 + handler_client.go 六处映射/回吐
+```
+
+| 层              | 文件                                                                                                        | 状态                     |
+| --------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------ |
+| core CORS 空头  | `service-core/micro-middleware/security/cors.go`（+ cors_test.go 14/14）                                    | 已修（未提交）           |
+| oauth 动态 CORS | `service-oauth/internal/middleware/dynamic_cors.go`（11 用例）+ `repository/cors_origins.go` + main.go 接线 | 已修（未提交）           |
+| oauth 数据链    | `internal/handler/dto.go`（CorsOrigins 字段）+ `handler_client.go`（六处映射/回吐，2 用例）                 | 已修（未提交）           |
+| SDK SSO         | `packages/core`（pkce.ts 新建 + auth-client 重写 + token-manager 会话模式）                                 | 已修（未提交，93/93 绿） |
+
+### 形态 2 全链（目标态时序）
+
+```
+应用（SPA/有后端）                      Autional IdP（auth.<入口域>）
+─────────────────                      ────────────────────────────
+loginWithOAuth({})
+ └ 生成 PKCE（verifier/challenge S256）+ state（存 sessionStorage）
+ └ 整页跳 /oauth/api/v1/oauth/authorize?response_type=code
+     &client_id&redirect_uri&scope&state
+     &code_challenge=…&code_challenge_method=S256  ──▶ 登录/同意（社交登录
+                                                       Google/微信等在此接一次）
+   ◀── 跳回 redirect_uri?code&state ──
+handleOAuthCallback()
+ └ state 校验 → POST /oauth/api/v1/oauth/token
+     {grant_type:authorization_code, code, client_id, code_verifier}
+     （public client 免 client_secret）                （成功响应顶层，无 data 包裹）
+ └ GET /oauth/api/v1/oauth/userinfo（Bearer）填用户
+ └ 会话记 SSO 模式 → 后续 refresh 自动走
+     /oauth/api/v1/oauth/refresh（凭 client_id）
+```
+
+### 通用接入纪律（对任何接入方，已写进 skill 5.2b）
+
+1. **注册应用登记两样**：redirect_uri（精确匹配）+ cors_origins（浏览器直连 origin；纯服务端调用可不登记）。TTL 60s 内生效，免重启。
+2. **域分工**：API 调用 → api.<入口域>（apiUrl 含 `/bff`）；浏览器授权跳转 → auth.<入口域>（`/oauth/...` 协议标准坐标，公开路由）。api 域 authorize 对无会话浏览器 = 死路（login_required）。SDK 自动推导（api.↔auth. 同后缀），`authorizeUrl` 可显式覆盖。
+3. **PKCE 强制**：public client（SPA / 移动端）无 code_challenge 直接拒；换票必带 client_id + code_verifier。机密 client（有后端）走 client_secret。
+4. **响应契约**：token / userinfo 成功响应为**顶层**（无 data 包裹）；错误体为 OAuth2 标准 `{error, error_description}`——SDK 已双兼容解析（identity 风格 `{code,message}` 是另一体系）。
+5. **刷新分路**：SSO 会话 refresh 走 oauth（公开 client 凭 client_id）；密码会话走 identity。SDK 按会话模式自动分派，接入方无感。
+6. **边界（未做）**：浏览器直连 identity 的**密码**登录（非 SSO）仍受网关白名单约束——第三方 SPA 建议一律走 SSO；如需直连密码登录另议。
+
+### SDK 侧修复对照（@autional/core，changeset minor）
+
+| 处                  | 原态（0.3.1）                              | 现态                                                                                                                       |
+| ------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| loginWithOAuth      | 跳 api 域 authorize；无 PKCE               | 跳 auth 域 + PKCE S256 + state；`OAuthOptions` 破坏性变更（clientId/scope/authorizeUrl/extraParams；appId 兼作 client_id） |
+| handleOAuthCallback | 缺 client_id + code_verifier（服务端必拒） | state 校验 → 换票 → OIDC userinfo → 会话记 SSO                                                                             |
+| refreshToken        | 一律 identity 路径                         | 按会话模式分派（SSO → oauth refresh）                                                                                      |
+| logout              | 一律调 identity logout                     | SSO 会话不调（RP-Initiated Logout 需整页跳转，由应用发起）                                                                 |
+| 新导出              | —                                          | generatePkce / generateState / buildAuthorizeUrl / resolveSsoAuthorizeUrl / PKCE session 工具                              |
+| 参考实现            | —                                          | demo：SSO 按钮 + `/oauth/callback` 路由页                                                                                  |
+| 验证                | —                                          | 单测 93/93（含换票参数断言、state 防 CSRF、模式分派）；typecheck 全绿                                                      |
+
+### 执行清单与结果（全链闭环，2026-10-10 → 10-11）
+
+| #   | 动作                                                              | 结果                                                                                     |
+| --- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| ①   | 提交 core CORS 修复 → tag `micro-middleware v1.0.36`              | ✅ 已提交 + 已 tag                                                                       |
+| ②   | bump 使用方（**gateway 必含**；identity 等建议）                  | ✅ 已 bump → 各自 CI dev 部署 OK                                                         |
+| ③   | 提交 oauth（动态 CORS + 数据链）→ CI dev                          | ✅ `960a5d8`（动态 CORS + 数据链）+ `1950a7d`（T7 refresh 修复）→ CI dev build+deploy OK |
+| ④   | SDK 分支 + PR（base main）+ changeset（minor）                    | ✅ PR 已建（autional/sdk #3，OPEN 待合并）                                               |
+| ⑤   | skill 三通道发布（com web / cn web / CDN）                        | ⏳ 待 ④ 合并后执行（产物已就绪、五门 PASS）                                              |
+| ⑥   | dev E2E：注册 client（redirect_uri + cors_origins）→ SSO 全链真机 | ✅ 三腿全绿：CLI 18/18 + 浏览器 12/12 + **线上生产复验 9/9**（见下节）                   |
+| ⑦   | lab 台账提交（本文件，feature/autional）                          | ✅ 本节                                                                                  |
+
+> ⑥ 实测又挖出两个新缺陷（T7 refresh 契约 / T8 同意页提交链），并纠正一处部署拓扑误解——详见下节「SSO 接入线实证」。
+
+## SSO 接入线实证（2026-10-11）：T7 / T8 两缺陷 + 部署拓扑纠正
+
+> 来源：⑥ dev E2E 真机执行（CLI 腿 + 浏览器腿）→ 又挖出两个缺陷；做线上复验时纠正一处部署拓扑误解。本文为实测记录。
+
+### 结论先行
+
+| 断言                                                                                                                                                          | 依据                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| **T7** = SSO 会话刷新契约缺陷：`/oauth/refresh` 只收 JSON，SDK 与 RFC 6749 §6 标准客户端发 form-urlencoded → 必 400 → 刷新静默死亡                            | 真机 E2E 实证 → 已修（`1950a7d`，form 优先 + JSON 回退）                   |
+| **T8** = 公开客户端浏览器同意提交链断裂：同意页原生表单 POST 无法携 Authorization 头 → 服务端会话绑定必拒 → 任何公开客户端（SDK 默认形态）浏览器 SSO 无法完成 | 探针双路实证（A 断链 302 / B fetch 契约 200）→ 已修                        |
+| **拓扑纠正**：`auth.autional.cn/.com` 线上源 = **GitHub `autional/auth`**（Vercel 双区单源）；gitee `authms/web` 是**遗留副本**，push 不触发任何部署          | 四证（见下）；**线上同意链自 2026-09-29 起已是 fetch 实现，无 T8 缺陷**    |
+| 线上生产复验 9/9 PASS                                                                                                                                         | 真浏览器 × 线上 auth.autional.cn × 全链（拒绝 / 同意换票 / 零异常 / 清理） |
+
+### T7 · SSO 刷新契约缺陷（已修 1950a7d）
+
+- **现象（E2E 真机）**：SSO 全链跑至 refresh 步必 400 `invalid character 'g'`。
+- **根因**：`RefreshToken` handler 仅 `ShouldBindJSON`；SDK `refreshSsoToken` 与 RFC 6749 §6 标准客户端发 `application/x-www-form-urlencoded`。协议面与服务面口径不一致 → 会话过期刷新**静默死亡**（用户表现为被登出，无错误提示）。
+- **修复**：form 优先（PostForm，与 `/oauth/token` 同口径）+ refresh_token 为空回退 JSON（存量消费方兼容）；补 form 路径单测；swagger @Accept 同步。
+- **外溢排查**：扫全部 handler 的绑定方式——除 T7 外检出 device authorize / PAR 同类（见下「台账留档」）；SDK 接入路径（authorize / token / refresh / userinfo）已全覆盖无遗漏。
+
+### T8 · 公开客户端浏览器同意提交链断裂（已修 + 拓扑纠正）
+
+**缺陷本体**：auth-pages 同意页用原生表单 POST `/oauth/api/v1/oauth/authorize`。浏览器原生表单**无法携 Authorization 头** → 服务端 TASK-15 会话绑定校验必拒（302 login_required）→ 公开客户端（PKCE/SPA 标准形态，即 SDK 默认模式）浏览器同意链断路。
+**修复**：页面改 fetch 提交（Authorization Bearer + `Accept: application/json` + form-urlencoded body）；approve/deny 双走服务端 JSON 契约。服务端契约（TASK-15 / AUTH-47，oauth `3949cd1`，10-05）早已就绪，缺的是前端迁移。
+
+**拓扑纠正（四证）**——先前认知「web 仓 push → auth.autional.cn 部署」有误：
+
+```
+线上事实：
+  auth.autional.cn / auth.autional.com  ← GitHub autional/auth（本地 sites/auth，main）
+                                          经 Vercel 双项目（cn-auth / auth 环境）部署
+                                          vercel.ts 自称「唯一源站（B3 单源双区）」
+遗留：
+  gitee authms/web（D:\go\auth_ms_new\web）= 独立历史仓（无共同提交谱系）
+  EdgeOne 部署已退役（ADR-002，域名 NXDOMAIN）；不在 CI manifest（repos.manifest 无 web）
+  mf01 构建机从未执行过 web 作业 → 其 push 不触发任何 CI/部署
+```
+
+| 证               | 内容                                                                                                                                                                                                                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ① gh deployments | autional/auth 仓有对应 Vercel 部署记录                                                                                                                                                                                                                                                        |
+| ② bundle 指纹    | 线上 deployed bundle 含 `VITE_VERCEL_GIT_COMMIT_SHA:"7a4bec5af717e4f5fc5e5176e308ab8aefc16d14"`（.cn 与 .com 同 sha）；consent chunk（.cn `page-BKwqVAv0.js` / .com `page-Ct31Wp5O.js`）含 Authorization + Accept + form-urlencoded 指纹；本地 clone `sites/auth` HEAD = `7a4bec5` 与部署一致 |
+| ③ CI 台账        | mf01 processed.txt / worker.log 无 web 作业记录                                                                                                                                                                                                                                               |
+| ④ 实现对照       | .cn 仓同意页自 `06627ce`（2026-09-29，「同意页冷启动/同意绑会话/rewrite 次序/回程回源」）已是 fetch 提交                                                                                                                                                                                      |
+
+**处置**：gitee web 仓的修复（原生表单 → fetch，`0b8a767`）**对线上零影响**，价值 = 遗留仓对齐 + 硬化（deny 走服务端契约、去原生表单残留）；线上无需部署——缺陷在线上本就不存在。**教训：push 前先确认「仓 → 部署」拓扑（构建机台账 + deployed bundle sha 两证即辨）**，勿假设「同名仓 = 线上源」。
+
+### 三腿实证（全绿）
+
+| 腿           | 脚本                                    | 结果           | 覆盖                                                                                                                                                                                                    |
+| ------------ | --------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI 协议腿   | `service-oauth/e2e/sso-cors-e2e.mjs`    | **18/18 PASS** | 注册客户端（redirect_uri + cors_origins）→ per-client CORS 矩阵（含空头污染根除 / 未注册不注入）→ authorize(302+state) → PKCE 换票 → userinfo(sub 一致性) → **T7 refresh 全链**                         |
+| 浏览器腿     | `service-oauth/e2e/sso-browser-e2e.mjs` | **12/12 PASS** | 真 Chromium × 进程内 vite × 修复版页面：B1 首访停留 + 拒绝回跳（形态断言：无原生表单残留）· B2 同意 → code → PKCE 换票 200 · B3 复访自动同意 · B4 零页面异常                                            |
+| 线上生产复验 | 一次性脚本（已跑已删）                  | **9/9 PASS**   | 真浏览器 × `auth.autional.cn`：登录 200 → 注册公开客户端 201 → 线上可达 200 → 首访停留（captures=0）→ 拒绝回跳 error=access_denied+state → 同意回跳 code+state → PKCE 换票 200 → pageerror=0 → 清理 204 |
+
+浏览器腿两条运维注意（已固化进 `service-oauth/e2e/README.md`）：
+
+1. **auth-pages 自带 vite 配置的 `/oauth/` 代理会吞掉同意页**——SPA 路由 `/oauth/api/v1/oauth/authorize` 与 API 端点同路径，`/oauth/` 前缀代理把页面导航转去网关（实测 400 JSON）→ 本地渲染不出同意页；本地 harness 须用 inline config 只代理 `/bff`、`/api/v1`、`/tenant/`。
+2. **回调捕获竞态**：redirect 到达捕获服务器时浏览器导航可能仍在途；立即发下一次 `goto` 会挂在在途导航（Playwright：goto 超时无提交）→ 每腿先 `waitForURL(捕获URL)` 落定再继续。
+
+### 台账留档（记录不修，理由随附）
+
+| 项                      | 位置（file:line）                                                                        | 缺陷                                                                                                                                                                                                           | 不修理由                                                                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| device authorize 双 gap | `device_authorization_handler.go:74-83`（+`:129-135`）                                   | ① 传输：JSON-only vs RFC 8628 §3.1 要求 form；② 响应：envelope 包裹 vs §3.2 flat 要求                                                                                                                          | 与 T7 同类但**零消费方**（仅本服务 demo + 测试）；半修产生「收 form 但响应形态不对」的更隐蔽错误                                                      |
+| PAR 多层缺陷链          | `handler_internal.go:114-123` + `handler_authorize.go:417/429-459` + `domain.go:200-214` | ① 传输：JSON-only vs RFC 9126 §2；② 顺序：response_type 检查（:417）先于 PAR 解析（:432）→ 标准 `client_id+request_uri` 提交必 400；③ 模型：无 code_challenge/nonce 列 → PKCE 未持久化 → 公开客户端 PAR 不可用 | 需 DB migration + 设计变更，非单点修补；零消费方（T7 后 SDK 路径已无遗漏）                                                                            |
+| atob/base64url 观察项   | 同意页 `page.tsx`（`atob(token.split('.')[1])`）                                         | WHATWG `atob()` 不接受 base64url 专属字符 `-` `_`；claims 含非 ASCII（如中文名）时编码可能产出该字符 → 解码抛错                                                                                                | 探针实测：现行 dev token payload 679 字符**无**此类字符（解码 OK，非现行缺陷）→ 记观察项；建议改用 base64url 安全解码（`-`→`+`、`_`→`/`、补 padding） |
+
+> 判据（T7/device/PAR 的修复边界）：**SDK 接入路径（authorize / token / refresh / userinfo）= 必修**（已全覆盖）；标准协议面其余端点 = 修须全修（transport + 响应形态 + 模型），半修更糟，零消费方下留专项。
+
 ## 补充观察 · 数据层无用户隔离（上游设计；接入检查清单候选）2026-10-10
 
 > 来源：交付后用户试用提问「不同账号看到的是不是同一份数据」→ 代码级 + 活体双验证。
@@ -553,7 +724,7 @@ CreateTrialTenant
 
 1. **修 .com 站 references 区错配**（B1）—— 2026-10-10 复测仍在：`https://www.autional.com/ai/references/config-template.md` 头注明 `region: cn · lang: zh`，issuer=`api.autional.cn`。修产物装配，并在发布管线加「区/lang 一致性」自动校验。→ **2026-10-10 已修复上线**（web `5e9c67b`：构建期按区落位 + 双守卫；线上复验 com 站 = com 版，`issuer: api.autional.com`）。
 2. **统一管理员密码传输口径（C5）+ 试用租户 RBAC 播种（C6）** —— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上（实验内已用改密对齐，见 C5）；且试用租户 RBAC 零播种 → 管理面门户 403 不可进。修 C5 时一并让注册链路的 `initial_role` 真正生效。→ **2026-10-10 已产品侧落地并部署 dev**（注册走 hash 传输 + 试用链补 RBAC 播种 + `initial_role` 通道；真机 E2E 9/9 绿）。
-3. **补「部署形态」决策章**（D17）—— 浏览器端按 skill 配置 100% 被 CORS 拒。前置「同源反代（推荐，SDK 已内建代理模式）vs CORS 白名单」二选一，给 dev 代理 + 生产反代样例；失败处置表收录 CORS 特征串。
+3. **补「部署形态」决策章**（D17）—— 浏览器端按 skill 配置 100% 被 CORS 拒。前置「同源反代（推荐，SDK 已内建代理模式）vs CORS 白名单」二选一，给 dev 代理 + 生产反代样例；失败处置表收录 CORS 特征串。→ **2026-10-10 产品侧根治**：改为「登记 cors_origins 即浏览器直连」为主路径（oauth 动态 CORS），代理模式作为备选；skill 5.2b 已含登记要求；见「根治」节。
 4. **配置模板三处修正**（D1/D2/D3/D12）—— apiUrl 必须含 `/bff`；tenantId 传递方式（React provider 无此字段；register 需经 http 适配器注入 `X-Tenant-ID`，否则静默落到错误租户）；appId 无创建路径时的「置空 + 预期警告」指引。
 
 ### P1 · 必踩坑
@@ -569,10 +740,11 @@ CreateTrialTenant
 10. **公开 API 修正**（D14/D15）—— facade 无 `refreshToken()`；`logout()` 为 fire-and-forget（Promise 完成 ≠ 服务端撤销完成），文档写明。
 11. **fallback 条款补 references 的 CDN 镜像路径**（B2）。
 12. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。→ `initial_role` 已生效（2026-10-10）；邀请码铸造 / SDK 邀请注册 / `tenant_members` 物化仍开放。
+13. **扩展协议面与标准对齐**（T7 同类留档）—— `/oauth/device/authorize`（RFC 8628：form 传输 + flat 响应）与 `/oauth/pushed-authorization`（RFC 9126：form + PAR 解析顺序 + PKCE/nonce 持久化）存在多层偏差（file:line 见「SSO 接入线实证」台账）；当前零消费方，建议专项全修（transport + 响应形态 + 模型），勿半修。
 
 ### P3 · 细节
 
-13. RequireAuth 区分「未登录 vs 角色不足」（D7）· stale-user 过期回退（D10）· logout 清理正确 storage 键（D11）· RegisterRequest 类型补 `invitation_code`（D13）。
+14. RequireAuth 区分「未登录 vs 角色不足」（D7）· stale-user 过期回退（D10）· logout 清理正确 storage 键（D11）· RegisterRequest 类型补 `invitation_code`（D13）· 同意页 token 解析改 base64url 安全解码（非 ASCII claims 防抛错）。
 
 ### 结构性建议（prompt 设计）
 
