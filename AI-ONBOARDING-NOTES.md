@@ -1,0 +1,415 @@
+# AI Onboarding Notes — 问题日志
+
+> 实验：用 Autional AI onboarding skill（https://www.autional.com/ai）给本项目接入 Autional 登录。
+> 本文件记录接入全过程中的问题、根因与处置。按发生顺序，分类归档。
+
+## 总览（结论先行）2026-10-10
+
+- **结论**：skill 可完成接入（本 fork Phase 0-8 走通、单测 128 例绿、浏览器 E2E 全绿），但**浏览器端按 skill 原样配置 100% 被 CORS 墙阻断（D17）**——这是唯一流程级 P0；另有 2 个 P0 配置陷阱（D1/D2，照抄模板必踩）。
+- **问题总量 36 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 10（全部线上实证）+ D 依赖/配置/运行时 20。
+
+### 严重度分布（D 组 20 项）
+
+| 级别 | 数量 | 项                                                                                |
+| ---- | ---- | --------------------------------------------------------------------------------- |
+| P0   | 3    | D17（CORS 墙）· D1（apiUrl 缺 /bff）· D2（tenantId 注入链断裂）                   |
+| P1   | 4    | D6（依赖墙 ERESOLVE）· D9（TS 连锁升级）· D12（注册落错租户）· D3（appId 不可得） |
+| P2   | 9    | D4 · D5 · D8 · D10 · D13 · D16 · D18 · D19 · D20                                  |
+| P3   | 4    | D7 · D11 · D14 · D15                                                              |
+
+（C 组另含 P0 一项：C5 试用管理员密码传输口径自相矛盾——按 skill 流程永远登不上。）
+
+### 过程一图
+
+```
+Phase 0-1 调研/租户   ── C 组 10 项（邀请码无铸造 API、试用管理员死结等）
+Phase 2-3 租户/账号   ── C5 P0：管理员登录按 skill 口径必失败（实测绕行）
+Phase 4   依赖/配置   ── D1/D2 P0 配置陷阱 + D3-D13（照抄模板不可用）
+Phase 5-6 构建/单测   ── 29 套件 / 128 用例 绿
+Phase 7   Node 集成   ── 8/8 PASS ── ⚠ 假绿 #1：Node 无 CORS 约束
+Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 绿
+                                    ⚠ 假绿 #2：代理探测「200」实为 SPA 回退
+```
+
+### 归因分类
+
+| 归因                                         | 项                                    | 要点                                                          |
+| -------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- |
+| 文档只讲半程 / 运行时模型未进材料            | D4 D5 D8 D13 D17 D18 D19 D20 · B2     | 部署形态（CORS/反代）、会话生命周期、错误面、镜像路径均无说明 |
+| SDK 实现缺陷（代码级）                       | D11 D12 D14 D15 D16 · C1 C6 C7 C9 C10 | 驼峰租户键、无重试的 AuthClient、fire-and-forget 登出等       |
+| 服务端/部署缺陷                              | B1 · C3 C5                            | .com 站 references 区错配（cn/zh 内容）；邀请码无铸造 API     |
+| 基础设施抖动                                 | C8 · D16/D20 实测现象                 | 跨境链路 20-30% 5xx，经 SDK 冒泡为用户可见错误                |
+| 环境年份差（非 skill 问题，但 skill 无预案） | A1-A4                                 | 老依赖 × 现代 Node，4 个阻断点                                |
+
+## 环境与基线
+
+| 项           | 值                                                      |
+| ------------ | ------------------------------------------------------- |
+| Fork         | https://github.com/autional-demo/takenote               |
+| 本地         | D:\ws\ai-onboarding-lab\takenote                        |
+| 本机 Node    | v24.15.0（npm 11.12.1）                                 |
+| 项目官方环境 | Dockerfile `node:12-alpine`（2020 年代项目）            |
+| Skill        | https://www.autional.com/ai/skill.md（en，region .com） |
+
+## A. 环境适配阶段（接入前置，非 skill 流程）
+
+老项目（2020 年栈）× 现代 Node 24 的年份差问题。共 4 个，均为阻断级。
+
+### A1 · node-sass 无法安装（原生模块无二进制）
+
+- 现象：`npm install` 时 `node-sass@4.14.1` 触发 node-gyp 编译，Node 24 无预编译二进制，失败。
+- 根因：node-sass 4.x 仅支持至 Node 14；Node 17+ 必需 dart-sass。
+- 处置：`node-sass@^4.14.1` → `sass@^1.32.0`（dart-sass）。sass-loader 10 自动检测切换，webpack 配置零改动。
+- 备注：老 `@import` 语法在 dart-sass 下有 deprecation 警告，不影响构建。
+
+### A2 · webpack md4 hash 崩溃（OpenSSL 3 移除）
+
+- 现象：`npm run build` → `Error: error:0308010C:digital envelope routines::unsupported`。
+- 根因：webpack 5.1.3 内部用 md4 生成 hash；Node 17+ 的 OpenSSL 3 移除 md4。
+- 处置：scripts 注入 `NODE_OPTIONS=--openssl-legacy-provider`（build/client 两条）。
+- 备注：webpack ≥5.54 已改用 wasm 版 md4、无此问题；升级属更大改动，未做。
+
+### A3 · postcss exports 拦截老 css-loader
+
+- 现象：`ERR_PACKAGE_PATH_NOT_EXPORTED: './package.json' is not defined by "exports" in .../postcss/package.json`
+- 根因：postcss@8.1.1（lock 锁定）的 exports 未暴露 `./package.json` 子路径；Node 20+ 严格执法（当年 Node 12 对此豁免）。
+- 处置：`overrides: { "postcss": "^8.4.0" }`（新版本已补 `./package.json` 导出）。
+
+### A4 · websocket-driver 0.6.5 调用已移除的 Node 内部 API
+
+- 现象：`npm run client` 启动即崩：`Error: No such module: http_parser`。
+- 根因：webpack-dev-server 3 → sockjs → faye-websocket → websocket-driver@0.6.5，其代码 `process.binding('http_parser')`；该 binding 在现代 Node 已移除。
+- 处置：`overrides: { "websocket-driver": "^0.7.4" }`（0.7.4+ 已不依赖该 binding）。
+
+### A 组小结（对 AI 接入的启示）
+
+- 4 个阻断点全部是「老依赖 × 新运行时」的年份差，与业务代码无关。
+- Autional skill 的流程假设「项目本身能跑」；对存在环境适配问题的老项目**无预案**（无 Phase 或指引覆盖）。
+- AI agent 执行接入前应先做「可运行性验证 + 环境适配」，否则 Phase 5 的 build 验证会被环境问题污染。
+
+## B. Skill 内容与部署问题（Phase 1-2 期间发现）
+
+### B1 · .com 站的 references 文件区域错配（部署缺陷，影响所有 .com 区接入者）
+
+- 现象：skill.md（region: com / lang: en）要求 AI 从 `https://www.autional.com/ai/references/*.md` 读取参考文件。实际抓取，该站的两个 references 文件内容是 **region: cn / lang: zh** 版本，配置模板中 `issuer: 'https://api.autional.cn'`（错区 endpoint）。
+- 证据（2026-10-10 三来源对照）：
+
+| 来源                        | SKILL.md / skill.md | references/\*.md                       |
+| --------------------------- | ------------------- | -------------------------------------- |
+| www.autional.com            | ✅ com/en           | ❌ **cn/zh**（issuer=api.autional.cn） |
+| cdn.autional.com/ai/latest/ | ✅ com/en           | ✅ com/en（issuer=api.autional.com）   |
+| www.autional.cn             | ✅ cn/zh            | ✅ cn/zh                               |
+
+- 影响：按 skill 指引（"只从 canonical domain 抓取相关文件"）执行的 AI agent 会拿到中文内容 + .cn endpoint 配置——若照用，开发者应用的 issuer 将指向错误区域，OIDC discovery 失败或跨区混乱。
+- 绕行（本次实验采用）：references 改用 CDN 镜像版本 `https://cdn.autional.com/ai/latest/references/*`（核验为正确 com/en 版）。
+- 疑因：.com 站构建产物中 references 资产引用了 .cn 的生成结果（生成器 core@f495cd50f8cc 同源，疑似部署/产物装配时区混用）。
+
+### B2 · fallback 链路对 references 的指引缺失
+
+- skill.md 的 fallback 条款只给 SKILL.md 自身的 CDN 镜像地址，未给 references 的镜像路径；同时 boundaries 规则限制"只从本区 canonical domain 抓取"。若 .com 站整体不可达，AI 将无法合法获取 references（实际上 CDN 有 `/ai/latest/references/` 镜像，但指引中不存在）。
+- 影响：降级场景下接入流程会中断（无明示的合法路径）。
+
+## C. 租户与账号（Phase 2-3 执行期间发现，全部线上实证）
+
+> 口径：本节全部结论来自 2026-10-10 对生产 API（api.autional.com → 跨境中转 → 云机）与云库（autional_tenant / autional_identity / autional_rbac）的实测。租户 = `takenote-demo`（`01M4J4BF8M2WQCTGVS2S0T9024`）。
+
+### C1 · SDK createTrialTenant 路径错误，且根本不支持邀请码（双缺陷）
+
+- 现象（代码证据）：`@autional/core@0.3.0` auth-client.ts:343 请求 `${baseUrl}/tenant/api/v1/public/tenants`。
+  - 实线上所有服务挂 `/bff/<svc>` 前缀（gateway-service.yaml 全量路由）；公开注册真实路径 = `/bff/tenant/api/v1/tenant/public/tenants`。SDK 路径**缺 `/bff` 前缀且缺 `tenant/` 一段**，直连必 404。
+  - 更关键：SDK 请求体（auth-client.ts:337-342）**没有 `invitation_code` 字段** —— 即使路径对，SDK 也无法执行"邀请码通道"注册（服务端 DTO 明明支持）。
+- 处置：绕开 SDK，手工 POST 正确路径（本实验 provision/register-tenant.mjs）成功。
+- 影响：照 skill 用 SDK 完成 [B] 邀请码路径注册的接入者 100% 卡死（404），且无 skill 指引可循。
+
+### C2 · 邀请码 ≠ 永久租户（skill 文案与实现不符）
+
+- 现象（DB 实证）：用邀请码成功注册后：`trial = t`、`plan = free`、`trial_expires_at = 注册时刻 + 7 天`（本租户到期 2026-10-17）。
+- 根因（代码证据）：service-tenant `CreateTrialTenant` 中 `trial := true` **无条件**（tenant_service.go:257）；邀请码段只做"查码校验 → 原子消费 → 建租户"，完全不改 trial/plan/时长。
+- 影响：skill 的 [B]「永久租户」表述与实现不符。接入者需按"7 天试用"规划；到期后果与续期路径 skill 未述。
+
+### C3 · 邀请码无铸造 API，批量发码只能直写数据库
+
+- 现象：邀请码系统面向**消费端**（注册时校验+消费）；服务仓文件头注 "RESERVED: Planned self-service tenant invitation code management" —— 管理端自助发码未实现。任何 API 都不铸造邀请码。
+- 实际表结构（实测）：表名 `profile_invitation_codes`（不是直觉上的 `invitation_codes`；模型来自共享仓 micro-share `user.InvitationCode`）。消费 = 单条条件 UPDATE（`code=? AND status='active' AND used_count<max_uses AND (expires_at IS NULL OR expires_at>now())`），并发安全。
+- 处置：本实验直连云库 INSERT 10 枚单次码（`mint-invite-codes.mjs`：id=ULID、code=18 字符 `AUT-XXXX-XXXX-XXXX`、max_uses=1、有效期 1 年），已建 batch 共 10 枚，寄存器验证 10 行 active。
+- 影响：skill [B] 要求"提供邀请码"，但拿码渠道（管理员自助）不存在；接入者与发码方之间是死结（除非有库权限）。skill 无说明。
+
+### C4 · 用户名保留名单会拒掉常见英文名（含 skill 示例风格的名字）
+
+- 现象（422 实证）：注册 `alice`、`carol` → `username is reserved`（错误码 61001701）；`bob` 通过。
+- 根因：保留名单 `service-share/micro-share/reserved/data/04_english_names.txt` 收录大量常见英文名（alice/carol 在列），**精确匹配**、大小写不敏感。
+- 处置：测试账号改名 `takenote-alice` / `takenote-carol`（前缀化避开精确匹配），注册成功。
+- 影响：若文档/示例惯用 alice/bob/carol 类演示名，2/3 会被服务端拒绝；错误信息友好（i18n_key），但 skill 未预警这一名单的存在与匹配方式。
+
+### C5 · 试用管理员密码"传输模式自相矛盾"——按 skill 流程永远登不上（P0）
+
+- 现象（实测）：注册时设定的管理员密码，按 **hash 模式**（`sha256hex(pwd|tenantId)`）登录 → `401 password content mismatch`（61000104）；改按 **plain 明文**登录 → **200 成功**。
+- 根因（代码证据）：tenant-service 的 `RegisterTrialAdmin` 调身份服务公共 `/auth/register` 时**不传 `password_transmission`**（client.go:109-114，raw 明文入 body）→ 身份服务按"明文输入"做 argon2 落库；而租户密码策略默认 **hash 模式**（service-identity security_policy.go:120 全局回退 `TransmissionHash`），SDK/skill 按 hash 计算 —— 两端对不上。
+- 影响：任何按 skill 默认配置（hash 传输）的接入者，注册出的试用管理员用标准客户端流程**永远登录失败**；唯一可行登录法是知道 plain 传输这个非文档化偏方。且明文登录与租户自身 "hash" 策略相悖（见 C9）。
+
+### C6 · initial_role=super_admin 被静默丢弃——试用管理员 0 RBAC 角色
+
+- 现象（DB 实证）：4 个用户（管理员 + 3 测试账号）在 `rbac_user_roles` / `rbac_user_permissions` **零绑定**。
+- 根因（代码证据）：`RegisterTrialAdmin` 的 body 带 `"initial_role":"super_admin"`（client.go:113），但身份服务 `RegisterRequest` DTO（dto.go:118-126）**没有该字段**，反序列化静默忽略 → 权限意图丢失。
+- 影响：代码注释"（含 super_admin 权限）"与事实不符；试用管理员即便登得进去也没有任何管理权限。
+
+### C7 · open 模式注册不写 tenant_members（成员列表为空）
+
+- 现象（DB 实证）：3 测试账号 + 管理员全部注册成功（identity 侧 4 用户 active），但 `tenant_members` 表 takenote-demo **0 行**。
+- 根因（代码证据）：auth_register.go 仅 `approval_required` 分支调 `AddTenantMember`（auth_register.go:171-209）；`open` 分支无成员行。
+- 影响：租户管理面成员列表将显示 0 人；"open 模式=任意同租户认证用户即成员"的物化时点不明（是否有懒物化未进一步验证——列入待验证项）。
+
+### C8 · 跨境中转链路 ~20-30% 5xx 抖动（接入期高频踩雷）
+
+- 现象：本阶段 20+ 次公开 API 请求中约 8 次 502（Vercel 边 `ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR`，约 30s 挂起后 502）；**同请求重试 2-4 次内必成功**。
+- 影响：所有接入脚本必须自带重试（幂等性由服务端天然保证：租户名唯一、邮箱唯一）；502 错误页只有通用文案 "An error occurred with this application"，对排查不友好。skill 无此提示。
+
+### C9 · 注册与登录对 password_transmission 的执行口径不一致
+
+- 现象（代码证据）：register **强制** `password_transmission` 匹配租户策略（auth_register.go:129-148，不符即 400）；login **只做格式校验不查策略**（auth_login.go:326 / 1153：plain 放行；hash 只要求 64 位 hex）。
+- 影响：管理员 plain 登录不被策略拒绝（C5 的偏方因此可行）；登录侧对租户策略的宽松使得"策略"形同虚设。两端口径应当一致。
+
+### C10 · SDK 内联注释与实现不一致（小）
+
+- password-transmission.ts:7 注释写 `SHA-256(password + tenantId)`，实现是 `rawPassword + '|' + policy.tenantId`（:57）。照注释手写实现会 401。SDK 测试文件（password-transmission.test.ts:50）用的才是正确带 `|` 的表述。
+
+### C 组小结（对 AI 接入的启示）
+
+- C5/C6 是**功能性阻断**：按 skill 流程建出的"管理员"登不上（hash 流）、且无权限——这两个缺陷叠加，[B] 路径在"注册之后"的部分实际不可用。
+- C1/C3 是**能力面缺口**：SDK 不支持邀请码注册；平台无发码工具——[B] 路径两端的工具链都缺，接入者被夹在中间。
+- C2/C4/C9 是**语义/口径不一致**：文档说永久/示例名可用/策略强制，实现说试用/部分名保留/仅注册侧强制。
+- 接入建议（本实验实际采取的绕行）：直连 REST（正确 /bff 路径）完成租户与账号生命周期；账号用非保留名；hash 约定以 SDK 实现（带 `|`）为准；管理员登录暂记 plain 偏方；脚本一律带 5xx 重试。
+
+## D. 依赖与配置阶段（Phase 4 执行期间发现，2026-10-10）
+
+### D1 · apiUrl 缺 `/bff` 段——SDK 全部 API 调用 404（P0）
+
+- 现象（线上实证）：skill 两处给出 `apiUrl: 'https://api.autional.com'`（config-template.md 与 4.2 节 env 块），**无 `/bff`**。SDK 以 `${baseUrl}/identity/api/v1/...` 拼 URL（auth-client.ts:111 登录等）。
+  - 直测：`GET https://api.autional.com/identity/api/v1/public/auth-config/default` → **404**（Vercel NOT_FOUND 页）；同请求加 `/bff` → **200**。
+  - 网关配置：仅路由 `/bff/<svc>/...` 前缀（configs/service/gateway-service.yaml:49 起，strip_prefix 转发上游）；裸 `/identity/...` 无路由。
+- 佐证（SDK 自证）：Discovery 类显式剥离 `/bff` —— 注释原文「去掉 /bff 等 BFF 路径前缀，回到根路径访问 /.well-known」（discovery.ts:28-31）→ **SDK 设计预期 apiUrl 含 `/bff`**，模板值与该预期不符。
+- 影响：按模板配置接入，登录/刷新/用户信息/验证码**全部 404**，接入完全不可用。C1 只覆盖 createTrialTenant 一条路径；此条是**系统性**的（所有端点）。
+- 正确值（本实验实测通过）：`apiUrl = https://api.autional.com/bff`；issuer 保持根域（discovery 用，实测 200）。
+
+### D2 · tenantId 注入链三处断裂——登录到不了目标租户（P0）
+
+- (a) skill 197 行明文要求「tenantId / appId / issuer / api URL：写 .env（public block）和 src/autional.ts」，但 config-template.md 的 `autionalConfig` 对象与 .env 块**都没有 tenantId 字段**。
+- (b) @autional/react 的 `AutionalProviderConfig` 类型**不含 tenantId**（AutionalProvider.tsx:16-22），组装 CoreConfig 时不透传（:46-53）→ 即使把 tenantId 写进 config 对象也会在 React 层被丢弃（TS strict 下直接编译报错）。
+- (c) core 的兜底提取对 canonical issuer 失效：`extractTenantFromIssuer('https://api.autional.com')` 主机名 3 段 → 取 parts[0] = **`'api'`**（autional.ts:154-167）——垃圾值。
+- (d) 无参 `fetchAuthConfig()` 命中 `/public/auth-config/default`（auth-client.ts:49-51）→ 线上实测返回的是 **default 租户**配置（tenant_id="default"），且策略与我们的租户不同（default: require_special=true / breach=true；takenote-demo: special=false / breach=false）。
+- (e) 登录的 hash 盐与 body 里的 tenant_id 都取决于 `credentials.tenantId` 显式传入（auth-client.ts:95 / 383 / 396）。
+- 净效果：**按模板配置，SDK 永远登不进任何真实租户**（hash 盐错、tenant_id 缺、策略读错）。绕行：login 调用逐次传 `tenantId`；配置对象中不能带 tenantId（TS 拒绝），单独导出常量。
+
+### D3 · appId 对新租户不可获得，但 React provider 类型强制要求（P1）
+
+- skill 3.2/4.2 要求注入 appId；@autional/react 的 provider 类型 `appId: string` **必填**（AutionalProvider.tsx:17）。
+- 但：新注册租户无任何「创建应用」的文档/API/入口（tenant_applications 表 takenote-demo 0 行；developer portal 需登录，而试用管理员登录即 C5 死局）。skill 自己的 Phase 3.2 凭据清单里也没有 appId 的获取途径。
+- SDK 运行时对缺 appId 仅 `console.warn`（autional.ts:47-49）。实测以空 appId 继续（记入 AUTIONAL_CHANGES.md）。
+
+### D4 · webpack（非标准前缀）无配置指引（P2）
+
+- 4.2 的 env-prefix 表只有 Vite/Next/CRA/Node 四行；takenote 是自定义 webpack 5（dotenv + DefinePlugin，仅透传 CLIENT_ID/DEMO 两键）。
+- 对该类项目：「追加 .env」对客户端 bundle **无效**（无键透传），真正生效的是模板里 `src/autional.ts` 的**字面量**——skill 未说明这一点，agent 可能在 .env 上兜圈。
+- 另：skill 标注 .env 为「public — safe to commit」，但 takenote `.gitignore` 忽略 `.env` → 公共配置不随仓分发，与模板表述不符。
+
+### D5 · Phase 7 验收第 8 步按字面无法验证目标租户（P2）
+
+- 「fetchAuthConfig() returns the tenant policy chosen in Phase 2」——按字面（无参调用）读的是 **default** 租户配置（D2d 实证），不是接入方策略；React hook 的 context `authConfig` 同样永远是 default（AutionalProvider.tsx:111）。按 skill 写的验收要么假绿（不细看）要么误红（细看发现不是自己的策略）。
+
+### D6 · 依赖墙：skill 安装命令在 React <18 项目上直接 ERESOLVE（P1，实测踩中）
+
+- skill 4.1 精确命令 `npm install @autional/core @autional/react @autional/api-identity` 在 takenote（react ^16.14.0）→ npm ERESOLVE 失败（peer react >=18.0.0）；skill 无版本兼容说明与降级条款。
+- 但实际不兼容是**声明级**的：扫描 react SDK dist，用到的 React API 仅 createContext / useContext / useEffect / useMemo / useState（React 16.8+ 全有）；且 react 16.14 已 backport `react/jsx-runtime`（安装后 webpack resolve 实测通过）→ peerDependencies 声明过严。
+- 绕行：`--legacy-peer-deps` 后安装成功（3 包、秒级）。
+
+### D7 · RequireAuth 不区分「未登录」与「角色不足」（P3）
+
+- unauthenticated 与 forbidden 返回同一 fallback（RequireAuth.tsx:38-44）→ 角色不足的用户看到登录页，重登后依旧被挡 = 可能无限循环，且无提示。
+
+### D8 · 无既有账号体系的 app 无指引（P2）
+
+- 5.2（替换/并存/仅加守卫）与 5.3（用户表迁移）都假设 app 自带账号体系；takenote 这类 0 账号的本地笔记应用落入覆盖空白——skill 未定义「从零新建登录页 + 守卫结构」的路径，完全由 agent 自拟。
+
+### D9 · TypeScript 工具链连锁升级（P1，实测踩中三层连环错）
+
+- 现象：build（Phase 5.5）连续三层失败，每层都是「SDK 新语法/新 API × 项目旧工具链」：
+  1. **TS1005 解析错**（24 处）：SDK 的 `dist/index.d.ts` 用了 TS 4.5+ 的 export 内联 `type` 修饰符（`export { ApiClient, type AuthResult, ... }`），takenote 装的是 typescript **4.0.3** → 解析直接失败。
+  2. 升 TS 4.9.5 后 → ts-loader 8.0.5 与 TS ≥4.7 的 `resolveTypeReferenceDirective` API 不兼容（`Non-string value passed to ts.resolveTypeReferenceDirective`）。
+  3. 升 ts-loader 9.6.2 → 它调用 `new webpack.WebpackError(...)`（webpack ≥5.24 API），takenote webpack **5.1.3** 无此导出 → `webpack.WebpackError is not a constructor`。
+- 解决路径（本实验既不是"全升"也不是"全降"，取最小一致组合）：
+  - typescript：4.5.5（第一个能解析内联 type 修饰符的版本，`--save-exact` 防止 caret 漂到 4.9）；
+  - **tsconfig 加 `useUnknownInCatchVariables: false`**（TS 4.4+ 起 catch 变量默认 unknown，旧代码 `error.message` 会炸 — 官方逃生阀）；
+  - ts-loader 8.4.0（8.x 最终版，webpack 5.1 API 兼容；不用 9.x 是为了不动 webpack 5.1.3 及其 2020 年代插件群）；
+  - 残余 6 处 TS7057（generator 无返回注解 → yield 隐式 any，TS 4.3+ 新检查）：8 个 saga generator 补 `Generator<any, any, any>` 注解（注：更"正统"的 `SagaIterator` 注解会连锁要求所有裸 promise yield 改 `call()` 包裹，对 onboarding 场景过深，未采用）。
+- 影响：任何 TS <4.5 的项目接 SDK 必踩；skill 无任何工具链最低版本声明（应给出「TS ≥4.5」或 SDK 侧降级 d.ts 语法）。这是 A 组（老项目 × 新运行时）的 TS 版翻版，同类年份差问题在 skill 里**第二次**无预案。
+
+### D10 · 过期会话仍通过 RequireAuth（stale-user 回退）（P2，单测实证）
+
+- `useAutional().isAuthenticated` 实为 `!!user`（AutionalProvider.tsx:120），而同名 SDK 方法 `autional.isAuthenticated()` 按 **token 过期**判定（autional.ts:199）——同名不同义。
+- `autional.user` getter 回退到持久化 store 的用户对象（autional.ts:169-171）；initialize 对过期 token 直接跳过（accessToken null → 整个用户恢复分支被跳过），残留的 user 使守卫放行。
+- 实证：tests/unit/client/autional/require-auth.test.tsx 第 3 例——localStorage 播入过期 JWT + 残留 user → 渲染受保护内容而非跳登录（特征化断言）。
+- 影响：过期会话在**首次 API 调用 401** 之前一直显示已登录；纯本地/演示应用（不调 API）可长期停留。绕行：接入方自行校验 token 有效性后再放行。
+
+### D11 · logout() 清理的 localStorage 键错误（P3，代码级）
+
+- auth-client.ts:314 `window.localStorage.removeItem('autional_auth_tokens')`；而 TokenManager 实际键是 `${prefix}tokens` = **`autional_tokens`**（token-manager.ts:12/40-42）。
+- 效果：该行为死代码（真清理靠 clear()+persist() 置空字段），但键名不一致会误导接入方排查「为什么登出后 local” 还有残留键」。
+
+### D12 · register() 的租户键驼峰直传 → 注册落到错误租户（P1，代码级 + 服务端实证）
+
+- auth-client.ts:156-160 register body = `{...data, password, password_transmission}` 原样透传；SDK 类型 `RegisterRequest.tenantId` 是**驼峰**（types.ts:30-37），而 login 显式映射 `tenant_id`（auth-client.ts:396）——同一 SDK 内两套口径。
+- 服务端实证：`dto.RegisterRequest.TenantID` 的 json tag 仅 `tenant_id`（service-identity/internal/handler/dto/auth_login.go:124）；驼峰键被 gin 忽略 → `getTenantID(c)` 回退链 = 上下文 → `X-Tenant-ID` 头（SDK register 不发此头）→ **defaultTenantID**（handler/tenant_context.go:32-50）。
+- 净效果：带 tenantId 调 SDK 注册 → tenant 键被忽略 → 用户被建到**服务端默认租户**（跨租户错位，安全相关）。**本实验未做该路径的线上实测**——会在平台默认租户产生真实用户，越出实验授权范围；证据为服务端 json tag + 回退链（代码级）+ 单测特征化断言。
+- 绕行：接入方对注册单发原始 HTTP（本实验即如此，见 provision/register-test-accounts.mjs）；或给 http 适配器注入 `X-Tenant-ID` 头（Phase 7 实测可行）；SDK 侧修复应统一为 snake 映射。
+
+### D13 · RegisterRequest 类型无法表达 invitation_code（P2，条件性缺口）
+
+- SDK `RegisterRequest` 只有 email/phone/username/password/tenantId/name（types.ts:30-37），**没有 invitationCode** 字段。
+- 服务端邀请制模式（`membership_approval=invitation_only`）必填 `invitation_code`（auth_register.go「仅邀请模式」检查段；tag 见 auth_login.go:123）。
+- 影响范围：仅「邀请制租户」；本实验租户为 **open**（3 个测试账号即免邀请码直接注册成功，provision/register-test-accounts.mjs 注释亦确认），未踩中。
+- 备注：skill 的 invite-path 材料只描述「管理员发邀请」，未提示 invitation_only 租户下 SDK register 的字段缺口。
+
+### D 组小结
+
+- D1+D2 叠加 = **按 skill 文档配置的接入 100% 不可用**（全部 404 + 登不到目标租户）；而正确值（apiUrl 带 /bff + 逐次传 tenantId）在 skill 全部材料中都不存在。这是继 B1（references 区配）、C1（SDK 路径）之后的**第三类文档缺陷：配置口径与部署现实脱节**（网关前缀未进模板）。
+- D6 属声明过严型依赖墙，一次 `--legacy-peer-deps` 可过；D3/D4/D5/D8 是接入体验缺口；D9 是第二例「年份差 × 无预案」。
+- 阶段结果：修完 D9 后 `npm run build` **通过**（webpack 5.1.3，3 条警告均为原有资源体积告警）。D10-D13 全部由 Phase 6 单测落地（5 套 26 例，含对 D10/D12 行为的特征化断言）；全量回归 28 套 127 例全绿。
+
+## Phase 7 · 集成测试（实测，SDK 驱动）2026-10-10
+
+- 载体：`provision/phase7-integration.mjs` —— 用 takenote 的 node_modules 内的**真 SDK**（@autional/core）驱动线上端点；凭据运行时从 test-accounts.txt 读取（不落脚本）；超时/5xx 自建重试适配器（C8 同类线上现象）。
+- 结论：**8/8 PASS**，含两处对文档缺口的实测绕行：① apiUrl 带 `/bff`（D1）；② SDK register 经 http 适配器注入 `X-Tenant-ID` 头（D12）。
+
+| #   | 步骤                   | 结果 | 关键证据                                                                                          |
+| --- | ---------------------- | ---- | ------------------------------------------------------------------------------------------------- |
+| 1   | Discovery              | PASS | `/.well-known/openid-configuration` 200；issuer=https://api.autional.com                          |
+| 2   | Register（SDK）        | PASS | 创建 user id=01M4J6N6HR48NP9EWFR3D9R0TG（takenote-phase7）；注册不回 token，需另登录              |
+| 3   | Login                  | PASS | alice 登录成功；JWT claims：sub=01M4J4P6WAXH60Y4W2J1HYCY7K · tenant_id=01M4J4BF8M2WQCTGVS2S0T9024 |
+| 4   | Profile                | PASS | /auth/me 返回 id/username/email/status/must_change_password/password_expires_in/mfa_enabled 等    |
+| 5   | Refresh                | PASS | 换新 access token（rotated=true）且新 token 立即可用（经 AuthClient 直调，见 D14）                |
+| 6   | Logout                 | PASS | 本地态清理 + 后续 profile 走 401 路径返回 null                                                    |
+| 7   | Revoked                | PASS | 登出后的旧 access token → **HTTP 401**（服务端真撤销，非仅本地清理）                              |
+| 8   | AuthConfig(tenant)     | PASS | tenant 与 transmission=hash 与 Phase 2 选择一致；display 名为空串                                 |
+| 附  | fetchAuthConfig() 无参 | INFO | 命中 default 租户（special=true）——D2d 线上复核                                                   |
+
+- 实测观察：API 面**间歇性高延迟** —— /auth/me 三次 15–20s 超时、auth-config 一次 20s 超时，均为重试后成功；裸 SDK 的 AuthClient 无重试（见 D16）。
+
+### D14 · skill 步骤 5「sdk.refreshToken()」在公开 API 上不存在（P3）
+
+- `Autional` facade 只有 `getRefreshToken()`（读值）；`refreshToken()` 仅存在于内部 AuthClient（`autional.ts:70` 匿名注入），React hook 亦无。
+- 按字面执行 8 步会在第 5 步断掉；实验改用公开导出的 `new AuthClient(...)` 直调（refreshToken 实测通过）。
+- 意义：skill 把「刷新」列为 facade 能力，但对外只有「顺带刷新」（expired access token → getAccessToken 内部触发）；接入方想显式轮换必须绕过 facade。
+
+### D15 · logout() 是 fire-and-forget：Promise 完成 ≠ 服务端撤销完成（P3，实测无可见窗口）
+
+- auth-client.ts:307-312：登出 POST 不 await（`.catch(()=>{})`），本地清态先完成、HTTP 在途。
+- 实测（`provision/phase7-logout-window.mjs`）：同链路 366ms 后再探旧 token → 已 401——未观测到可利用窗口。
+- 结构风险仍在：logout() resolve 不代表服务端已撤销；多标签页/本地转存 token 的场景只能靠服务端撤销时机兜底。
+
+### D16 · AuthClient 无重试策略（ApiClient 才有）→ 线上间歇超时直接冒泡用户（P2，实测踩中）
+
+- ApiClient 内建 5xx/网络重试（指数退避，api-client.ts:125-142）；AuthClient 所有方法**裸调 http.request**，无重试、无超时策略。
+- 实测：8 步流程中 4 处 15–20s 超时（/auth/me 为主 + auth-config 一次），全部由实验自建的重试适配器消化；若按 skill 直接用 facade 登录/取资料，这些超时会以错误形式抛给终端用户。
+- 建议：AuthClient 复用 ApiClient 的重试/退避；skill 失败处置表补注「SDK 哪一层已经重试、哪一层没有」。
+
+## Phase 8 · 浏览器端到端（实测：踩中 CORS 墙 → dev 代理绕行后全绿）2026-10-10
+
+- 结论先行：按 skill 配置接入后，**浏览器端 100% 不可用**（D17 全阻断，登录第一跳即死）→ 实现同源代理绕行后 E2E 全绿。
+- E2E 清单与结果（Playwright 实测）：
+
+| #   | 检查           | 结果 | 关键证据                                                                                               |
+| --- | -------------- | ---- | ------------------------------------------------------------------------------------------------------ |
+| 1   | 登录 → /app    | PASS | alice 登录成功 → 跳转 /app，TakeNote 全 UI 渲染（侧栏/分类/欢迎笔记）                                  |
+| 2   | 重载会话保持   | PASS | ignoreCache 硬重载仍停留 /app（localStorage `autional_tokens` 供 token）                               |
+| 3   | 多标签登出联动 | PASS | 标签 A 点 Log out → A、B 两标签同时跳 /login；存储字段全部清空（保留空壳 stub）；POST /auth/logout 200 |
+| 4   | 错误密码       | PASS | HTTP 401 → 页面显示 "Login failed"，不跳转                                                             |
+| 5   | CAPTCHA        | N/A  | 本租户安全策略未启用验证码                                                                             |
+
+- 绕行（两处，均进 fork）：
+  1. `config/webpack.dev.js`：`'/bff'`、`'/.well-known'` → `https://api.autional.com`（changeOrigin）——浏览器视角全部同源，CORS 不再参与；
+  2. `src/client/autional.ts`：demo 分支 `apiUrl = window.location.origin + '/bff'`（必须**绝对同源**，理由见 D18）。
+
+### 本 Phase 的两类假绿（均实际踩中，方法论教训）
+
+1. **Node ≠ 浏览器**：Phase 7 用 Node 直驱 SDK 得 8/8 PASS —— 但 Node/curl 无 CORS 约束，浏览器首调全灭。**「SDK 集成测试」只跑 Node 会漏掉整个浏览器安全模型**；skill 的验证清单亦无浏览器项。
+2. **200 ≠ 正确响应**：curl 探测代理曾以「200 OK」误判通过——实为 dev server 的 SPA 回退把未知路径喂了 index.html（HTML 也是 200）。**验证代理必须核响应体/Content-Type，不能只看状态码。** 同类坑：`TaskStop` 停 npm 任务会**孤儿化 node 子进程**（Windows 进程树），旧 dev server 继续持有 :3000 → 新任务 EADDRINUSE 静默失效 → 出现「配置改了不生效、但 bundle 却是新的」幻象（旧 watcher 重编译新源码）。先 `netstat -ano` 认端口属主再排障。
+
+### D17 · CORS 墙：按 skill 配置的浏览器端接入 100% 不可用（P0，浏览器实测）
+
+- 现象（控制台原文）：
+  - 初始化 discovery：`Access to fetch at 'https://api.autional.com/.well-known/openid-configuration' from origin 'http://localhost:3000' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present`
+  - 点登录：`POST .../auth/login ... Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header`
+- curl 探测矩阵（2026-10-10）：
+
+| 请求                                              | 结果 | ACAO                           |
+| ------------------------------------------------- | ---- | ------------------------------ |
+| OPTIONS 预检 /bff/.../auth/login                  | 204  | **无**（预检失败 → POST 不发） |
+| GET /bff/.../public/auth-config/{tid}             | 200  | `*`（公开端点豁免）            |
+| GET /.well-known/openid-configuration             | 200  | **无**（响应被浏览器扣留）     |
+| POST /bff/.../auth/login（带 Authorization/JSON） | —    | 预检即挡                       |
+
+- 机制：服务端按 **origin 白名单**签发 ACAO（`ACA-Credentials: true`，Allow-Headers 含 `X-Tenant-ID`/`X-Entry-Plane`）；本地/自部署域名不在白名单 → 全部预检被拒。SDK 侧其实**内置了同源代理模式**（Discovery 支持 discoveryBaseUrl、AuthClient 走 config.apiUrl）——可见「同源反向代理」是官方预期的浏览器部署形态；但 **skill 配置模板只给直连 apiUrl，全文无 CORS/代理部署说明，也无白名单申请入口**（第四类文档缺陷：运行时安全模型未进接入材料）。
+- 影响：接入方在域名获批前浏览器端 0 可用；失败发生在登录第一跳，错误信息面向开发者、终端用户无从自查。
+- 绕行：同源 dev 代理（上表两处配置）。生产形态应二选一：域名加白名单，或前端同源自反代。
+- 未做：白名单自助配置路径验证（skill/开发者门户均未见入口，未进一步深挖）。
+
+### D18 · SDK discovery 的代理模式对相对 apiUrl 静默降级（P2，代码级 + 实测踩中）
+
+- `Discovery` 构造：`discoveryBaseUrl = (apiUrl || '').replace(/\/bff\/?$/, '')...`，`discover()` 里 `base = this.discoveryBaseUrl || issuer`（discovery.js:10-19）。
+- 传**相对** `apiUrl = '/bff'`：strip 后 = `''` → falsy → **静默回退到绝对 issuer** → discovery 又变跨域（同源代理失效一半）。
+- 实测：第一版绕行即用相对写法 → 浏览器仍跨域打 `https://api.autional.com/.well-known/...`（CORS 错误复现）；改为绝对 `window.location.origin + '/bff'` 后同源 200。且 facade 构造只把 `config.apiUrl` 传给 Discovery（index.mjs:1063）——没有独立配置 discovery 基址的入口。
+- 意义：SDK 的代理模式可用但踩点隐蔽（最自然的相对路径写法恰好降级且无任何警告）。建议 SDK：strip 后为空串时保留相对基址（浏览器同源 resolve），或显式报配置错误。
+
+### D19 · demo「Log out」只清 Redux、不结束 Autional 会话（P2，app 集成缺口，本 fork 已修）
+
+- 现象：takenote 既有登出只 `dispatch(logout)`（SettingsModal.tsx:57）→ demo 分支 saga 仅 `put(logoutSuccess())`（sagas/index.ts:41-53）——**SDK token 与会话原封不动**：Redux 看似登出（用户信息清空），刷新页面立刻又「已登录」（RequireAuth 看 SDK 持久态）＝ 登出按钮形同虚设。
+- 修复（fork）：登出 saga 经一个 React 无关的桥接函数 `endAutionalSession()`（`autional.ts`）结束 SDK 会话——SDK：清 token + 服务端撤销 + TabSync 广播；桥接函数由入口处组件（`index.tsx` 的 AutionalSessionBridge）用 `useAutional().logout()` 注册（见 AUTIONAL_CHANGES.md）。选择 saga 桥接而非组件内直接调 hook：登出流程原本就在 saga，且避免让被测组件依赖 Autional Provider（首版直接改 SettingsModal，TakeNoteApp 单测 1 例红，故改道）。
+- 实测（修复后，两标签闭环）：标签 A 登录 → A、B 同时进 /app（登录也走 TabSync）；标签 A 登出 → A、B 同时回 /login；`POST /auth/logout` 200；本地存储字段清空（保留空壳 stub）。
+- 归属：SDK 侧能力齐全（hook 有 logout、TabSync 广播）；这是**接入方集成缺口 + skill 文档只覆盖「进」（provider/守卫）不覆盖「出」（登出接线）**。建议 skill 增「会话生命周期」步骤：登录、登出、登出联动、过期处置四项验收。
+
+### D20 · 网关抖动 × 代理 502 text/plain → 用户看到 JSON 解析错误（P2，实测）
+
+- 实测链路：登录时上游间歇 502（跨境链路抖动，与 D16 同类现象）→ dev 代理以 `text/plain` 返回 "An error occurred while trying to proxy…" → SDK http 适配器按 JSON 解析失败 → 页面错误条显示 `Unexpected token 'A', "An error o"... is not valid JSON`（用户无法理解）。
+- 放大效应：auth-config/login 无重试（D16）→ 每次抖动 = 一次用户可见失败。实测登录共 3 次点击才成功（2×502 后 200）；E2E 期间 auth-config 三连 502/超时。
+- 建议：http 适配器对非 JSON 响应归一化为「网关/网络错误」；AuthClient 补重试（同 D16）。skill 快速排错表补「页面出现 Unexpected token '<' 之类 → 上游不是 JSON（常为代理/网关错误页）」。
+
+### Phase 8 小结
+
+- 一天内两轮「全绿假象」：Phase 7 的 Node 8/8、代理探测的「200」——都被更真实的一层推翻（浏览器安全模型 / 响应体校验）。**接入验证的最后一跳必须是真浏览器。**
+- CORS 墙（D17）是本次实验**唯一 P0**：它不来自代码错误，而来自「skill 未文档化运行时安全模型」——老项目接入前不可预测、失败点最早、对用户最不友好。建议 skill 把「部署形态（同源反代 or CORS 白名单）」列为接入前置决策项。
+- D18/D19/D20 均为「文档只讲半程」型缺口（代理配置半程、会话生命周期半程、错误面处理半程）。
+
+## 给 Autional 团队的优化建议（2026-10-10 汇总）
+
+> 依据 = 本文件 36 项问题日志。优先级：P0 = 真实用户按 skill 流程走不通；P1 = 能走通但必踩坑；P2/P3 = 体验与健壮性。
+
+### P0 · 主链路走不通
+
+1. **修 .com 站 references 区错配**（B1）—— 2026-10-10 复测仍在：`https://www.autional.com/ai/references/config-template.md` 头注明 `region: cn · lang: zh`，issuer=`api.autional.cn`。修产物装配，并在发布管线加「区/lang 一致性」自动校验。
+2. **统一管理员密码传输口径**（C5）—— 注册按 plain 入库、按租户策略（hash）校验 → 管理员按 skill 流程永远登不上。注册链路与登录链路必须同一口径。
+3. **补「部署形态」决策章**（D17）—— 浏览器端按 skill 配置 100% 被 CORS 拒。前置「同源反代（推荐，SDK 已内建代理模式）vs CORS 白名单」二选一，给 dev 代理 + 生产反代样例；失败处置表收录 CORS 特征串。
+4. **配置模板三处修正**（D1/D2/D3/D12）—— apiUrl 必须含 `/bff`；tenantId 传递方式（React provider 无此字段；register 需经 http 适配器注入 `X-Tenant-ID`，否则静默落到错误租户）；appId 无创建路径时的「置空 + 预期警告」指引。
+
+### P1 · 必踩坑
+
+5. **新增「会话生命周期」步骤**（D19）—— 登录 / 登出 / 多标签联动 / 过期四项验收；明示「登出必须调用 SDK logout，只清应用态 = 登出失效」。
+6. **新增「老项目可运行性预检」**（A1-A4）—— 2020 老栈 × 现代 Node 四类阻断（node-sass / md4 / postcss exports / websocket-driver）检查清单与处置；React<18 项目 `--legacy-peer-deps` 指引（D6）；TS 项目工具链一致性说明（D9）。
+7. **验证纪律升级**（Phase 8 教训）—— ① 浏览器 E2E 设为必过项（Node 集成 PASS ≠ 浏览器可用）；② 代理/网关验证必须核响应体（200 可能是 SPA 回退）。两条写进 skill 验证章。
+
+### P2 · 体验与健壮性
+
+8. **错误面归一化**（D16/D20）—— SDK http 适配器对非 JSON 响应归一为「网关/网络错误」；AuthClient 复用 ApiClient 的重试/退避，或 skill 标注「哪层已重试、哪层没有」。
+9. **公开 API 修正**（D14/D15）—— facade 无 `refreshToken()`；`logout()` 为 fire-and-forget（Promise 完成 ≠ 服务端撤销完成），文档写明。
+10. **fallback 条款补 references 的 CDN 镜像路径**（B2）。
+11. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。
+
+### P3 · 细节
+
+12. RequireAuth 区分「未登录 vs 角色不足」（D7）· stale-user 过期回退（D10）· logout 清理正确 storage 键（D11）· RegisterRequest 类型补 `invitation_code`（D13）。
+
+### 结构性建议（prompt 设计）
+
+- **开工先问四件事**：框架与版本 / Node 版本 / 部署形态（同源 or 直连）/ 是否 React<18 —— 提前分流，避免 Phase 4 才发现装不上。
+- **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。
+- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 —— 命中即查表给原因 + 处置。
+- **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。
