@@ -8,6 +8,7 @@
 - **结论**：skill 可完成接入（本 fork Phase 0-8 走通、单测 128 例绿、浏览器 E2E 全绿），但**浏览器端按 skill 原样配置 100% 被 CORS 墙阻断（D17）**——这是唯一流程级 P0（**当日已产品侧根治**：oauth 动态 CORS + SDK SSO 重写，见「根治」节）；另有 2 个 P0 配置陷阱（D1/D2，照抄模板必踩）。
 - **问题总量 37 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 11（全部线上实证）+ D 依赖/配置/运行时 20。
 - **2026-10-11 增补（SSO 线实证）**：dev E2E 三腿全绿（CLI 18/18 + 浏览器 12/12 + 线上 9/9）期间又挖出 **T7**（refresh 契约缺陷，已修 `1950a7d`）与 **T8**（公开客户端同意提交链断裂，已修 + 部署拓扑纠正——线上自 09-29 已是 fetch，无此缺陷）；另留档 **device authorize 双 gap + PAR 多层缺陷链 + atob/base64url 观察项**（见「SSO 接入线实证」节）。
+- **2026-10-11 深夜增补（localhost 全链验证）**：真实 Chromium × localhost:5173 全链 **11/11 PASS**（跨源换票 CORS 真验 / 仪表盘内容水合 / 刷新会话保持）；期间修掉 **4 处接入摩擦**（F1 vite 代理键吞回调路由 · F2 StrictMode 双换票 · F3 skill 模板 apiUrl 缺 `/bff` · F4 demo Dashboard 传空对象白屏）；探针实证 **SSO access_token 对 identity API 全通**（4/4 200）。见「SDK demo localhost 全链实证」节。
 
 ### 严重度分布（D 组 20 项）
 
@@ -752,3 +753,48 @@ handleOAuthCallback()
 - **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。
 - **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane / `403 route not available on this host`（host× 受众双绑定，user 面路由误经 machine 入口）—— 命中即查表给原因 + 处置。
 - **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。→ 2026-10-10 落地上线：构建期按区落位 + 双守卫（见 B1 处置），站间 diff 校验由「按区命名镜像 + 区标记守卫」等价覆盖。
+
+## SDK demo localhost 全链实证（2026-10-11 深夜）：接入摩擦四修 + SSO token 可调用面
+
+> 来源：「接入方在 localhost 本地开发能不能全链跑通」的端到端验证（真实 Chromium × vite × SDK demo × .cn 生产 API）。四处摩擦已修进 SDK PR #3（`d0c66bd`..`95b7ba2`）。
+
+### 结论先行
+
+| 断言                                                                                                                                         | 依据                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **localhost 接入全链可用**：11/11 PASS（装载 → SSO 跳转 → PKCE → 换票（跨源 CORS 真验）→ 仪表盘水合 → 刷新会话保持 → 零异常 → 清理）         | `provision/demo-localhost-verify.mjs` 真机运行                        |
+| **开通跨域 = 注册客户端登记 `cors_origins` + `redirect_uris`**（TTL 60s 内生效、免重启）；demo origin `http://localhost:5173` 实测直连不受阻 | per-client 动态 CORS（oauth `860a5d8`）真机；B2/E2 断言               |
+| **SSO access_token 可调用 identity API 全通**：`/auth/me`、`/me/permissions`、`/me/sessions` 均 200（与登录 token 同权）                     | `provision/oauth-token-apiprobe.mjs`（node 侧全链 token → 逐条探针）  |
+| **identity 裸路径 `/identity/*` 双区均 404** → 规范 `apiUrl` 必须带 `/bff`（如 `https://api.autional.cn/bff`）                               | curl 实测双区；skill 双区 config-template 已修 + 产物重建 + 五门 PASS |
+| 四处接入摩擦全部修复                                                                                                                         | 见下 F1–F4                                                            |
+
+### 修复明细（F1–F4）
+
+| #   | 现象                                                                                    | 根因                                                                      | 修复                                                                                     |
+| --- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| F1  | 浏览器进入回调地址落到 500（text/plain），SPA 路由 `/oauth/callback` 渲染不出           | 接入方 vite 代理键 `/oauth` 吞掉 SPA 路由（API 前缀与回调路径同前缀）     | demo 代理键收窄 `/oauth/api`（**接入方自查项**：代理只挡 API 形状路径）                  |
+| F2  | 换票 200 后紧跟 401 "authorization code already used"，登录误报失败                     | React StrictMode 双 effect → 同 code 并发换票两次                         | SDK `handleOAuthCallback` 在飞换票幂等（同 code 复用同 Promise）+ 单测                   |
+| F3  | 接入方按 skill 模板配 `apiUrl` → identity 族 API 404（auth-config 等）                  | core 的 `/bff` strip 是一等设计（apiUrl 规范形态带 `/bff`），模板漏掉后缀 | 双区 `config.{cn,com}.json` 补 `/bff` + 8 产物重建 + 五门 PASS                           |
+| F4  | demo 仪表盘挂载后白屏（连 `Welcome` 都不渲染；console: `client.get is not a function`） | Dashboard `getProfile({} as any)` 传空对象 → 同步抛错 → React 掉整棵树    | 改传真实 `useAutionalContext().autional.api`；真机复验 profile 卡水合（ID/Email/Status） |
+
+### 关键口径（接入心智模型）
+
+```
+接入方本地开发（localhost）全链：
+  ① 注册公开客户端：redirect_uris=[http://localhost:5173/oauth/callback]
+                     cors_origins=[http://localhost:5173]          ← 跨域开关就是这一行
+  ② SDK 配置：apiUrl = https://api.autional.cn/bff                 ← 必须带 /bff
+  ③ SSO 登录 → 回调页 handleOAuthCallback → token（浏览器跨源直连，实测 200）
+  ④ 拿到的 access_token 可直接调 Autional API（/auth/me 等，已实证）
+  ⑤ 刷新页面会话保持（persist token 水合，已实证）
+```
+
+### 验证资产（本次入库 `provision/`）
+
+| 脚本                        | 用途                                                             | 结果       |
+| --------------------------- | ---------------------------------------------------------------- | ---------- |
+| `demo-register-client.mjs`  | 注册 localhost 公开客户端（台账凭据运行时解析，值不进日志/argv） | —          |
+| `demo-localhost-verify.mjs` | 真 Chromium 全链 11 断言（A–G 步骤 + profile 诊断块）            | 11/11 PASS |
+| `oauth-token-apiprobe.mjs`  | SSO token 可调用面探针（node 侧）                                | 4/4 200    |
+
+> 运维备注：① demo 启动需 `VITE_AUTIONAL_APP_ID=<client_id> VITE_AUTIONAL_ISSUER=https://api.autional.cn VITE_AUTIONAL_API_URL=https://api.autional.cn/bff`；② driver 结束会清理客户端（G1），复跑前需重新注册 + 重启 demo（appId 为启动期 env）；③ profile 卡快照时序——请求稍晚于 h1 水合（≤3s）出现，等待后成功渲染；三次连跑 + 探针排除了产品缺陷。
