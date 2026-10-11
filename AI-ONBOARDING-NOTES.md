@@ -9,7 +9,7 @@
 - **问题总量 37 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 11（全部线上实证）+ D 依赖/配置/运行时 20。
 - **2026-10-11 增补（SSO 线实证）**：dev E2E 三腿全绿（CLI 18/18 + 浏览器 12/12 + 线上 9/9）期间又挖出 **T7**（refresh 契约缺陷，已修 `1950a7d`）与 **T8**（公开客户端同意提交链断裂，已修 + 部署拓扑纠正——线上自 09-29 已是 fetch，无此缺陷）；另留档 **device authorize 双 gap + PAR 多层缺陷链 + atob/base64url 观察项**（见「SSO 接入线实证」节）。
 - **2026-10-11 深夜增补（localhost 全链验证）**：真实 Chromium × localhost:5173 全链 **11/11 PASS**（跨源换票 CORS 真验 / 仪表盘内容水合 / 刷新会话保持）；期间修掉 **4 处接入摩擦**（F1 vite 代理键吞回调路由 · F2 StrictMode 双换票 · F3 skill 模板 apiUrl 缺 `/bff` · F4 demo Dashboard 传空对象白屏）；探针实证 **SSO access_token 对 identity API 全通**（4/4 200）。见「SDK demo localhost 全链实证」节。
-- **2026-10-11 收官增补（takenote 存量应用改造实证）**：webpack 老应用（React 16）按 skill v3.1 §5.2b 改造接入，**真机全链 12/12 PASS**（真登录页填表 → 同意 → 回跳 code → 同源代理换票 → 落 `/app`）；期间修掉第三批接入摩擦 **F5–F7**（SDK 默认 authorize 在同源代理形态下踩 api 平面陷阱 · .com `/bff` 502 双区不对等 · 租户 `login_methods=["oauth"]` 登录死路 + identity auth-config 写读分裂假成功）；另存 webpack-dev-server 配置不热更的工具链教训。见「takenote SSO 接入实证」节。
+- **2026-10-11 收官增补（takenote 存量应用改造实证）**：webpack 老应用（React 16）按 skill v3.1 §5.2b 改造接入，**真机全链 12/12 PASS**（真登录页填表 → 同意 → 回跳 code → 同源代理换票 → 落 `/app`）；期间修掉第三批接入摩擦 **F5–F7**（SDK 默认 authorize 在同源代理形态下踩 api 平面陷阱 · .com `/bff` 502 双区不对等 · 租户 `login_methods=["oauth"]` 登录死路 + identity auth-config 写读分裂假成功）；另存 webpack-dev-server 配置不热更的工具链教训。见「takenote SSO 接入实证」节。**F5–F7 已于同日并入 skill 第四轮内容发布（v3.2，com `v0.1.0-6039ff74` / cn `v0.1.0-343fde3d`）**——文末「对 skill 文档的反哺」与「第四轮发布收官」节。
 
 ### 严重度分布（D 组 20 项）
 
@@ -867,8 +867,32 @@ handleOAuthCallback()
 | `cn-login-page-probe.mjs`         | auth 登录页全网络 + DOM 深探（修复后表单元素清单）                                               | inputs/按钮齐全 |
 | `auth-two-plane-probe.mjs`        | 双区 authorize 对照探针（F6 诊断 + 复测：.com 502 / .cn 正常）                                   | 双区差异实证    |
 
-### 对 skill 文档的反哺候选（待并入下一版）
+### 对 skill 文档的反哺（**已并入 v3.2**，2026-10-11）
 
-1. §5.2b 补「**代理形态 authorize 引脚**」提示：只要 `apiUrl` 是同源代理，`loginWithOAuth` 需显式 `authorizeUrl` 指向 auth 域名（F5）。
-2. 排查章节补「**登录页无可输入项 = 租户 login_methods 数据问题**」的症状 → 真源写路径对照表（F7，含 identity 假成功陷阱）。
-3. 双区指引补 F6 现状（`.com` auth `/bff` 502，10-11 复测复现——持续性）；在修复前，接入默认建议 `.cn` 面。
+> 落地坐标：sdk `aef3527`（内容基线；生成核心 `core@87c827301112`）→ CDN com `v0.1.0-6039ff74` / cn `v0.1.0-343fde3d`（cdn `2b0ace1`）+ 站点镜像 web `033ae05`；T4 复验 34/34。台账：workspace registry §15 / sdk `CHANGELOG.md`（`f7a9041`）。
+
+1. ✅ §5.2b 补「**代理形态 authorize 引脚**」段（EN/ZH + 示例）：`apiUrl` 为同源代理时，`loginWithOAuth` 需显式 `authorizeUrl` 指向 auth 域名（F5 并入；机理 = 默认派生只把 `api.` 主机改写为 `auth.`）。
+2. ✅ §2.3 + 边界表补「**登录页零输入项 = 租户 login_methods 数据死路**」排查段（含真源写路径与假成功陷阱）：真源 = tenant auth-policy（`PUT /admin/tenants/:id/auth-policy`，值为 JSON 字符串）；identity `PUT …/auth-config` 的 200 不可信（F7 并入）。
+3. ✅ 边界表补「**授权页挂起 ~30s 落品牌门户** = 本区 auth 主机后端代理故障 → 跨区对照 + 引脚健康区」行（F6 泛化为区中立表述并入）。⚠ **F6 产品侧 `.com` auth `/bff` 502 仍未修**（非 skill 面；接入侧对策已写入 skill）。
+
+## skill 内容第四轮发布收官（2026-10-11）：v3.2 —— F5–F7 反哺落地
+
+> 触发：上节 F5–F7 反哺候选 → skill `_core` 并入（PROCEDURE 6 处 + config-template 2 处）→ 发布链复跑 + 线上复验。
+
+### 结论先行
+
+| 断言                                                                                                   | 依据                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| **skill 三通道 v3.2 全发**（§5.2b authorizeUrl 引脚段 + §2.3/边界表零输入项与双区对照 + 配置模板注释） | 站点 web `033ae05`；CDN `2b0ace1`（com `v0.1.0-6039ff74` / cn `v0.1.0-343fde3d`）；T4 复验 **34/34** 全绿（鲜度标记命中） |
+| CI 全绿                                                                                                | sdk `skills-gate` success（`aef3527`）                                                                                    |
+| 生成机制零改动                                                                                         | 复用既有 `{{REGION}}` 变量内联；五门本地 PASS；G2 区纯净门保证两区互不串区                                                |
+| T3 干跑跳过（范围判定）                                                                                | 内容指引变更 ≠ 工作区协议变更（`RELEASING.md` §2.3）                                                                      |
+
+### 资产坐标（远端）
+
+| 资产           | 坐标                                             | 说明                                          |
+| -------------- | ------------------------------------------------ | --------------------------------------------- |
+| skill 站点镜像 | github.com:autional/web `033ae05`                | 双站 `public/ai/` 镜像 + `.sha256`            |
+| skill CDN      | github.com:autional/cdn `2b0ace1`                | 双区版本目录 + 指针 / rewrite 跟版            |
+| skill 内容基线 | github.com:autional/sdk `aef3527`                | 台账 `f7a9041`（CHANGELOG + RELEASING 跟版）  |
+| 台账           | workspace `docs/positioning/12-…registry.md` §15 | 版本与配方 / 完整 sha256 / T4 矩阵 / 站点映射 |
