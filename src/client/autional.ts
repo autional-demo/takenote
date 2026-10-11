@@ -9,15 +9,19 @@ import { AutionalProvider, useAutional, RequireAuth } from '@autional/react'
 const isDemo = process.env.DEMO
 
 export const autionalConfig = {
-  // No appId is obtainable for a freshly registered tenant (notes D3); SDK warns only.
-  appId: '',
-  issuer: 'https://api.autional.com',
+  // Registered as a public OAuth client for SSO (§5.2b, skill v3.1): kept in sync with
+  // D:/tmp/takenote-client.json — redirect_uri http://localhost:3000/oauth/callback,
+  // origin http://localhost:3000. Supersedes the notes-D3 "no appId" limitation.
+  appId: 'client-O6XjAjdi3OZK',
+  // Plane pinned to .cn: the client is registered on admin.autional.cn, and the auth/CORS
+  // legs verified there. auth.autional.com's /bff proxy currently 502s (F6 note in NOTES).
+  issuer: 'https://api.autional.cn',
   // The gateway routes ONLY /bff/<svc>/... — the template's root-domain value 404s every call (notes D1).
   // The demo build goes same-origin through the dev-server proxy (notes D17): the API server's CORS
   // allowlist rejects this origin, so cross-origin browser calls are blocked (curl is not). The demo
   // URL must stay absolute — the SDK strips the trailing /bff to derive the discovery base, and a
   // bare '/bff' would strip to an empty string and silently fall back to the cross-origin issuer.
-  apiUrl: isDemo ? `${window.location.origin}/bff` : 'https://api.autional.com/bff',
+  apiUrl: isDemo ? `${window.location.origin}/bff` : 'https://api.autional.cn/bff',
   syncTabs: true,
 }
 

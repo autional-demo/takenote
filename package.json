@@ -61,7 +61,7 @@
   },
   "dependencies": {
     "@autional/api-identity": "^0.3.0",
-    "@autional/core": "^0.3.0",
+    "@autional/core": "^0.3.2",
     "@autional/react": "^0.3.0",
     "@reduxjs/toolkit": "^1.4.0",
     "axios": "^0.21.1",

@@ -5,6 +5,7 @@ import { Helmet, HelmetProvider } from 'react-helmet-async'
 
 import { LandingPage } from '@/components/LandingPage'
 import { AutionalLogin } from '@/components/AutionalLogin'
+import { AutionalOAuthCallback } from '@/components/AutionalOAuthCallback'
 import { TakeNoteApp } from '@/containers/TakeNoteApp'
 import { PublicRoute } from '@/router/PublicRoute'
 import { PrivateRoute } from '@/router/PrivateRoute'
@@ -58,6 +59,7 @@ export const App: React.FC = () => {
       </Helmet>
 
       <Switch>
+        <Route exact path="/oauth/callback" component={AutionalOAuthCallback} />
         <Route exact path="/login" component={AutionalLogin} />
 
         {isDemo ? (

@@ -7,10 +7,10 @@ import { AutionalProvider, autionalConfig, RequireAuth } from '@/autional'
 import { makeJwt, mockResponse } from './helpers'
 
 const discoveryMetadata = {
-  issuer: 'https://api.autional.com',
-  authorization_endpoint: 'https://api.autional.com/oauth/api/v1/oauth/authorize',
-  token_endpoint: 'https://api.autional.com/oauth/api/v1/oauth/token',
-  jwks_uri: 'https://api.autional.com/oauth/api/v1/oauth/.well-known/jwks.json',
+  issuer: 'https://api.autional.cn',
+  authorization_endpoint: 'https://api.autional.cn/oauth/api/v1/oauth/authorize',
+  token_endpoint: 'https://api.autional.cn/oauth/api/v1/oauth/token',
+  jwks_uri: 'https://api.autional.cn/oauth/api/v1/oauth/.well-known/jwks.json',
   response_types_supported: ['code'],
 }
 
@@ -56,7 +56,7 @@ describe('RequireAuth route guard (skill Phase 6: logged-out -> redirect)', () =
     expect(screen.queryByText('APP CONTENT')).not.toBeInTheDocument()
     // Discovery always runs against the apiUrl origin, with /bff stripped.
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.autional.com/.well-known/openid-configuration',
+      'https://api.autional.cn/.well-known/openid-configuration',
       undefined
     )
   })

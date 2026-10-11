@@ -278,7 +278,7 @@ Thanks goes to these wonderful people:
 
 ## Autional integration (fork)
 
-This fork adds an [Autional](https://www.autional.com) identity integration on top of the original demo app: a login page at `/login` and a `RequireAuth` guard on `/app`, with tenant `takenote-demo` and SHA-256 password transmission.
+This fork adds an [Autional](https://www.autional.com) identity integration on top of the original demo app: a login page at `/login` (password + **Autional SSO** via PKCE, §5.2b) and a `RequireAuth` guard on `/app`, with tenant `takenote-demo` and SHA-256 password transmission. SSO callback lives at `/oauth/callback`; the `.cn` plane is pinned (the `.com` auth leg 502s — see `AI-ONBOARDING-NOTES.md` §F6).
 
 - Setup details and portal links: [`AUTIONAL_SETUP.md`](AUTIONAL_SETUP.md)
 - What changed in this fork: [`AUTIONAL_CHANGES.md`](AUTIONAL_CHANGES.md)

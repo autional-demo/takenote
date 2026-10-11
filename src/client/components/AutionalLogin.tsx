@@ -4,7 +4,7 @@ import { Redirect, useHistory } from 'react-router-dom'
 import { useAutional, AUTIONAL_TENANT_ID } from '@/autional'
 
 export const AutionalLogin: React.FC = () => {
-  const { login, isAuthenticated } = useAutional()
+  const { login, loginWithOAuth, isAuthenticated } = useAutional()
   const history = useHistory()
   const [identity, setIdentity] = useState('')
   const [password, setPassword] = useState('')
@@ -13,6 +13,21 @@ export const AutionalLogin: React.FC = () => {
 
   if (isAuthenticated) {
     return <Redirect to="/app" />
+  }
+
+  // SSO (§5.2b): full-page redirect to the Autional auth page, PKCE handled by the SDK.
+  // authorizeUrl is pinned to the auth plane: with the proxy apiUrl (localhost/bff)
+  // the SDK default derives a same-origin /oauth/api path that the proxy forwards to
+  // the api plane, which renders no login UI (silent error=login_required, F5 note).
+  const handleOAuth = async () => {
+    setError('')
+    try {
+      await loginWithOAuth({
+        authorizeUrl: 'https://auth.autional.cn/oauth/api/v1/oauth/authorize',
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'SSO sign-in failed')
+    }
   }
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -60,6 +75,12 @@ export const AutionalLogin: React.FC = () => {
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        <p className="login-subtitle" style={{ margin: '1rem 0 0.25rem' }}>
+          or continue with
+        </p>
+        <button className="button" type="button" onClick={handleOAuth}>
+          Continue with Autional
+        </button>
       </div>
     </section>
   )

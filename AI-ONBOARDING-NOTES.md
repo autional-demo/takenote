@@ -9,6 +9,7 @@
 - **问题总量 37 项**：A 环境适配 4（非 skill 流程）+ B skill/部署 2 + C 租户/账号 11（全部线上实证）+ D 依赖/配置/运行时 20。
 - **2026-10-11 增补（SSO 线实证）**：dev E2E 三腿全绿（CLI 18/18 + 浏览器 12/12 + 线上 9/9）期间又挖出 **T7**（refresh 契约缺陷，已修 `1950a7d`）与 **T8**（公开客户端同意提交链断裂，已修 + 部署拓扑纠正——线上自 09-29 已是 fetch，无此缺陷）；另留档 **device authorize 双 gap + PAR 多层缺陷链 + atob/base64url 观察项**（见「SSO 接入线实证」节）。
 - **2026-10-11 深夜增补（localhost 全链验证）**：真实 Chromium × localhost:5173 全链 **11/11 PASS**（跨源换票 CORS 真验 / 仪表盘内容水合 / 刷新会话保持）；期间修掉 **4 处接入摩擦**（F1 vite 代理键吞回调路由 · F2 StrictMode 双换票 · F3 skill 模板 apiUrl 缺 `/bff` · F4 demo Dashboard 传空对象白屏）；探针实证 **SSO access_token 对 identity API 全通**（4/4 200）。见「SDK demo localhost 全链实证」节。
+- **2026-10-11 收官增补（takenote 存量应用改造实证）**：webpack 老应用（React 16）按 skill v3.1 §5.2b 改造接入，**真机全链 12/12 PASS**（真登录页填表 → 同意 → 回跳 code → 同源代理换票 → 落 `/app`）；期间修掉第三批接入摩擦 **F5–F7**（SDK 默认 authorize 在同源代理形态下踩 api 平面陷阱 · .com `/bff` 502 双区不对等 · 租户 `login_methods=["oauth"]` 登录死路 + identity auth-config 写读分裂假成功）；另存 webpack-dev-server 配置不热更的工具链教训。见「takenote SSO 接入实证」节。
 
 ### 严重度分布（D 组 20 项）
 
@@ -827,3 +828,45 @@ handleOAuthCallback()
 | skill 内容基线 | github.com:autional/sdk `f690c38`  | 内容 `1f5af5b` + `d0c66bd`；生成器 `3213050`；台账 `4bedde2` |
 | SDK 包         | npmjs `@autional/core@0.3.2`       | tags：`latest` = `next` = 0.3.2（npmmirror 同步）            |
 | 接入口径       | 本文件「关键口径」节 + skill §5.2b | 登记两样（redirect_uri + cors_origins）+ apiUrl 带 `/bff`    |
+
+## takenote 存量应用改造实证（2026-10-11 收官）：全链 12/12 + 接入摩擦 F5–F7
+
+> 来源：把实验 fork 里**既有的密码登录表单**升级为「SSO + 密码并存」（enhancement 叠加），验证 skill v3.1 §5.2b 在**存量老应用（webpack + React 16 + Redux saga）**上的真实可用性。代码改造 5 文件：`src/client/autional.ts`（appId + .cn 引脚）、`AutionalLogin.tsx`（SSO 按钮 + authorizeUrl 引脚 + F5 注释）、`AutionalOAuthCallback.tsx`（回调新组件）、`containers/App.tsx`（回调路由注册）、`config/webpack.dev.js`（代理 target .cn + `/oauth/api` 精确前缀；另有一处测试夹具随 .cn 对齐）。真 Chromium 全链 **12/12 PASS**。
+
+### 结论先行
+
+| 断言                                                                                                                                                                                    | 依据                                           |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| **skill §5.2b 三步（注册客户端 → `loginWithOAuth` → 回调 `handleOAuthCallback`）在 webpack 老应用全链可用**：12/12 PASS                                                                 | `provision/takenote-sso-e2e.mjs` 真机运行      |
+| **真登录页全链**（非 API 绕行）：authorize 落 auth 登录页 → 填表提交 → 同意页 approve → 回跳 code → 同源代理换票 200 → 落 `/app`（RequireAuth 通过 + `autional_tokens` `authMode=sso`） | 同上 T2–T7                                     |
+| 密码表单与 SSO 并存（enhancement 叠加准则）                                                                                                                                             | T1/T3；`RequireAuth` 守卫 `/app` 复用 SDK 会话 |
+| 全程零页面异常（pageerror=0 / console error=0）                                                                                                                                         | T8                                             |
+| 摩擦三修 F5–F7（明细见下）                                                                                                                                                              | 实证于本波                                     |
+
+### 修复明细（F5–F7）
+
+| #   | 现象                                                                                                                   | 根因                                                                                                                                                                                                                                                                     | 处置                                                                                                                                                                                                                                                                       |
+| --- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F5  | 点 SSO 按钮后落到「API 平面」页面：无登录 UI，静默 `error=login_required`                                              | 同源代理形态（`apiUrl=localhost:3000/bff`）下 SDK 默认 authorize 派生为**同源 `/oauth/api` 路径** → 代理转发到 **api 平面**；登录 UI 只在 **auth 平面**渲染                                                                                                              | `loginWithOAuth({ authorizeUrl: 'https://auth.autional.cn/oauth/api/v1/oauth/authorize' })` 显式引脚 auth 平面（**接入方自查项**：凡代理形态，authorize 必须显式引脚 auth 域名）                                                                                           |
+| F6  | `.com` 面 SSO 全链走不通：authorize 冷启动 31.8s 挂起 → 502 → 回退 brand 门户「Choose organization…」死胡同            | `auth.autional.com` 的 `/bff` 代理 502（`.cn` 面同请求 ~1s 正常解析）——**双区部署不对等**（产品侧待查项，非接入方问题）                                                                                                                                                  | takenote 全链引脚 `.cn`（`issuer`/`apiUrl`/webpack 代理 target/`authorizeUrl` 四处对齐），并回退 `.com` 依赖                                                                                                                                                               |
+| F7  | auth 登录页只渲染 OAuth 卡片（「Sign In with OAuth / Choose your provider below」），无任何可输入项 → 所有登录方式全死 | 租户 `oauth-app` 安全策略 `login_methods=["oauth"]` 且 `providers=[]` → 页面无 provider 可选（**数据层死路**）。更深一层：identity `PUT /admin/security/auth-config` **返回 200 但值不变**——写本地弃用表，读路径优先 tenant gRPC（非空遮蔽）——A-112 迁移未完成面的假成功 | 真源写路径 = tenant-service `PUT /admin/tenants/:id/auth-policy`（`login_methods` 值为 **JSON 字符串**如 `"[\"password\",\"oauth\"]"`）；修复后三读路径复验：tenant / identity / 公开 by-slug 全为 `["password","oauth"]` ✓（`provision/fix-oauth-app-login-methods.mjs`） |
+
+### 工具链教训（webpack 侧，非产品缺陷）
+
+- **webpack-dev-server v3 的 proxy 配置启动时读取一次，不热更**：改 `webpack.dev.js` 后必须重启 dev server（源码改动只触发热编译）；本次烧掉一轮排查——旧 proxy 仍指 `.com`、与代码的 `.cn` 引脚混平面，重启后才全链一致。
+- Windows 下**孤儿 node 进程**会占住 3000 端口，新实例静默失败。探查法：`netstat -ano | grep LISTENING` 找 PID → `taskkill //PID <pid> //F`；`nodemon` 的 inspector 9229 冲突（EADDRINUSE）是旁证信号。
+
+### 验证资产（本次入库 `provision/`）
+
+| 脚本                              | 用途                                                                                             | 结果            |
+| --------------------------------- | ------------------------------------------------------------------------------------------------ | --------------- |
+| `takenote-sso-e2e.mjs`            | 真 Chromium 全链 12 断言（登录页 → authorize → 真登录 → 同意 → callback → 换票 → `/app` → 健康） | 12/12 PASS      |
+| `fix-oauth-app-login-methods.mjs` | 租户 `login_methods` 修复（tenant 真源 PUT + 三读路径复验；口令运行时解析）                      | 三读全绿        |
+| `cn-login-page-probe.mjs`         | auth 登录页全网络 + DOM 深探（修复后表单元素清单）                                               | inputs/按钮齐全 |
+| `auth-two-plane-probe.mjs`        | 双区 authorize 冷启动对照探针（.com 502 vs .cn ~1s）                                             | 双区差异实证    |
+
+### 对 skill 文档的反哺候选（待并入下一版）
+
+1. §5.2b 补「**代理形态 authorize 引脚**」提示：只要 `apiUrl` 是同源代理，`loginWithOAuth` 需显式 `authorizeUrl` 指向 auth 域名（F5）。
+2. 排查章节补「**登录页无可输入项 = 租户 login_methods 数据问题**」的症状 → 真源写路径对照表（F7，含 identity 假成功陷阱）。
+3. 双区指引补 F6 现状（`.com` auth `/bff` 502）；在修复前，接入默认建议 `.cn` 面。

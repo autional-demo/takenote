@@ -29,10 +29,16 @@ module.exports = merge(common, {
       '/api': 'http://localhost:5000',
       // Autional calls are same-origin through this proxy (notes D17): direct
       // cross-origin browser calls are CORS-blocked for non-allowlisted origins.
-      '/bff': { target: 'https://api.autional.com', changeOrigin: true },
-      '/.well-known': { target: 'https://api.autional.com', changeOrigin: true },
+      // SSO: the SDK derives authorize/token from the apiUrl base, so the
+      // API-shaped /oauth/api paths must go through too. Proxy only this exact
+      // prefix — proxying '/oauth/' wholesale would swallow the SPA callback
+      // route /oauth/callback (demo F1 lesson, skill §5.2b).
+      '/oauth/api': { target: 'https://api.autional.cn', changeOrigin: true },
+      '/bff': { target: 'https://api.autional.cn', changeOrigin: true },
+      '/.well-known': { target: 'https://api.autional.cn', changeOrigin: true },
     },
-    open: true,
+    // Popup suppressed for automation (OPEN_BROWSER=0); unchanged for manual dev.
+    open: process.env.OPEN_BROWSER !== '0',
     compress: true,
     hot: true,
     port: 3000,
