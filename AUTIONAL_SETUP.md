@@ -5,6 +5,7 @@
 - Date: 2026-10-10 · SSO upgrade 2026-10-11
 - Framework: React 16 + custom webpack 5 (redux-saga · react-router v5 · jest 26)
 - Tenant: takenote-demo (trial, expires 2026-10-17)
+- Tenant slug: `takenote-demo`
 - Region: **.cn** (SSO line pinned to .cn — the .com auth `/bff` proxy 502s at time of writing; tenant/accounts verified 200 on .cn, notes F6)
 - Environment: local demo mode (`DEMO=true`)
 - Login methods: **password + SSO** (both live on `/login`; SSO per skill §5.2b)
@@ -37,13 +38,15 @@
 
 ## Portals
 
-| Portal    | Address                       | Purpose                                     |
-| --------- | ----------------------------- | ------------------------------------------- |
-| Admin     | https://admin.autional.cn     | users / roles / security policy / audit log |
-| User      | https://user.autional.cn      | change password / devices / MFA             |
-| Security  | https://security.autional.cn  | anomaly detection / login trends            |
-| Developer | https://developer.autional.cn | API docs / OAuth clients / app settings     |
-| Status    | https://status.autional.cn    | service health                              |
+| Portal    | Address                                     | Purpose                                          |
+| --------- | ------------------------------------------- | ------------------------------------------------ |
+| Admin     | https://admin.autional.cn/takenote-demo/    | users / roles / security policy / audit log      |
+| User      | https://user.autional.cn/takenote-demo/     | change password / devices / MFA                  |
+| Security  | https://security.autional.cn/takenote-demo/ | anomaly detection / login trends                 |
+| Developer | https://developer.autional.cn               | API docs / OAuth clients / app settings (global) |
+| Status    | https://status.autional.cn                  | service health (global)                          |
+
+> Console portals are tenant-scoped — the `/takenote-demo/` slug keeps users on the tenant. A bare root drops them on the tenant picker.
 
 > Portals listed on the .cn plane to match the integration (the .com variants exist; its auth leg 502ed during the SSO work — notes F6).
 
