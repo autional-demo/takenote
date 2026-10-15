@@ -909,3 +909,38 @@ handleOAuthCallback()
 | skill CDN      | github.com:autional/cdn `2b0ace1`                | 双区版本目录 + 指针 / rewrite 跟版            |
 | skill 内容基线 | github.com:autional/sdk `aef3527`                | 台账 `f7a9041`（CHANGELOG + RELEASING 跟版）  |
 | 台账           | workspace `docs/positioning/12-…registry.md` §15 | 版本与配方 / 完整 sha256 / T4 矩阵 / 站点映射 |
+
+## SDK 跟版（2026-10-15）：core 0.3.5 / react 0.3.1
+
+> 触发：SDK 修复批次发版（core 0.3.5 冷启动过期恢复 / react 0.3.1 构建保留 `'use client'`）→ 三实验跟版；takenote 为其中**纯依赖跟版**一例（React SPA，无 next 会话链面）。
+
+### 结论先行
+
+| 断言                                          | 依据                                                                                                                                           |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 升级后全链复跑 **12/12**（与 10-11 基线持平） | `provision/takenote-sso-e2e.mjs` 真机跑：登录页 → authorize → 真登录 → callback → `/bff` 换票 200 → `/app` + `authMode=sso` 会话 → 健康 0 错误 |
+| 单测 + 构建无回归                             | 29 套件 / 128 用例 PASS；`npm run build` 绿                                                                                                    |
+| 应用代码零改动（纯依赖跟版）                  | 工作区仅 `package.json` + `package-lock.json` 两文件                                                                                           |
+
+### 改动
+
+| 包                       | 版本            | 说明                                                                         |
+| ------------------------ | --------------- | ---------------------------------------------------------------------------- |
+| `@autional/core`         | ^0.3.2 → ^0.3.5 | 冷启动过期会话恢复（C12）+ 会话桥恒注册——takenote 走 core 直连链，同享该修复 |
+| `@autional/react`        | ^0.3.0 → ^0.3.1 | 修复构建丢 `'use client'` 指令；takenote 为 React 16 场景，纯防御跟版        |
+| `@autional/api-identity` | ^0.3.0（持平）  | 无变更                                                                       |
+
+### 验证记录
+
+| 项           | 命令                                  | 结果                                                                                                                                  |
+| ------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 单测         | `npm test`                            | 29 套件 / 128 用例 PASS                                                                                                               |
+| 构建         | `npm run build`                       | 绿                                                                                                                                    |
+| 真机 SSO E2E | `node provision/takenote-sso-e2e.mjs` | **12/12**（T1 登录页并表 / T2 authorize + PKCE / T3 密码表单 / T4 提交 / T5 callback / T6 换票 200 / T7 `/app` + sso 会话 / T8 健康） |
+
+### 探针健壮性补丁（2026-10-15，本次复跑配套）
+
+- **brand 漏斗 bypass**：auth authorize 偶发 302 至 `brand.autional.cn` 纯展示页并卡死（A/B 分桶 flaky）→ T3 等待改为轮询：brand 停留 >20s 即沿 URL `redirect` 参数直接 `page.goto(auth + redirect)` 续走（state / PKCE 全在该参数内）。
+- **同意按钮句柄重试**：登录提交后 React 重渲染使旧 ElementHandle 脱挂（`Element is not attached to the DOM`）→ 点击包 try/catch，下一轮取新句柄重试。
+
+> core 层过期恢复的闭环实证在 novel / nextchat 两探针（`*-c6n-refresh-e2e.mjs`，12/12 与 13/13）；takenote 无 next 会话链面，本轮为同包依赖受益 + 全链无回归验证。
