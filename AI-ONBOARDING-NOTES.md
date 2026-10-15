@@ -744,7 +744,7 @@ handleOAuthCallback()
 9. **错误面归一化**（D16/D20）—— SDK http 适配器对非 JSON 响应归一为「网关/网络错误」；AuthClient 复用 ApiClient 的重试/退避，或 skill 标注「哪层已重试、哪层没有」。
 10. **公开 API 修正**（D14/D15）—— facade 无 `refreshToken()`；`logout()` 为 fire-and-forget（Promise 完成 ≠ 服务端撤销完成），文档写明。
 11. **fallback 条款补 references 的 CDN 镜像路径**（B2）。
-12. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。→ `initial_role` 已生效（2026-10-10）；邀请码铸造 / SDK 邀请注册 / `tenant_members` 物化仍开放。
+12. **邀请码能力补齐**（C1-C3/C6/C7）—— 铸造 API；SDK/流程支持邀请码注册；注册写 tenant_members；`initial_role` 生效。→ `initial_role` 已生效（2026-10-10）；**邀请码铸造 API 已闭环**（#28：service-tenant `add08ea`，2026-10-15 真机复测通过——铸造门禁〔无令牌 401 / 非平台租户 403〕+ 铸造/列表/撤销 3 端点 + 有效码消费，`provision/invitation-code-retest.mjs`）；SDK 邀请注册 / `tenant_members` 物化仍开放（2026-10-16 核实：SDK 全包 grep `invitation_code` 零命中）。
 13. **扩展协议面与标准对齐**（T7 同类留档）—— `/oauth/device/authorize`（RFC 8628：form 传输 + flat 响应）与 `/oauth/pushed-authorization`（RFC 9126：form + PAR 解析顺序 + PKCE/nonce 持久化）存在多层偏差（file:line 见「SSO 接入线实证」台账）；当前零消费方，建议专项全修（transport + 响应形态 + 模型），勿半修。
 
 ### P3 · 细节
@@ -753,9 +753,9 @@ handleOAuthCallback()
 
 ### 结构性建议（prompt 设计）
 
-- **开工先问五件事**：框架与版本 / Node 版本 / 部署形态（同源 or 直连）/ 是否 React<18 / **应用数据存哪、是否按用户隔离**（换账号 / 换设备分别看到什么）—— 提前分流，避免 Phase 4 才发现装不上、收尾才发现数据面无隔离。
-- **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。
-- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane / `403 route not available on this host`（host× 受众双绑定，user 面路由误经 machine 入口）—— 命中即查表给原因 + 处置。
+- **开工先问五件事**：框架与版本 / Node 版本 / 部署形态（同源 or 直连）/ 是否 React<18 / **应用数据存哪、是否按用户隔离**（换账号 / 换设备分别看到什么）—— 提前分流，避免 Phase 4 才发现装不上、收尾才发现数据面无隔离。→ **2026-10-16 核实：4/5 已落 skill**（框架 §1.1 / Node≥18 §0.1 / 部署形态 §5.2b〔含同源代理必须引脚 `authorizeUrl`〕/ 数据隔离 §1.6〔R1 换号守卫已并入〕）；**React<18 指引未落**。
+- **每 Phase 留证据**（响应体片段 / 截图）—— 防两类假绿：「200 ≠ 正确」「Node ≠ 浏览器」。→ **部分落**：skill 交付门 8.4 已含 evidence 行（build / 单测 / 集成测试）+ Phase 7 逐项断言 + 8.3 浏览器实操提醒；「截图/响应体」级别的留证纪律未成文。本 NOTES 全程留有响应体/落点证据（C/D/E 各组处置行）。
+- **维护「高频失败矩阵」**：CORS 报错 / 全量 404（缺 /bff）/ `Unexpected token` / 注册落错租户 / 管理员登录 401 / 改密 400（字段名）/ 管理面 403 entry plane / `403 route not available on this host`（host× 受众双绑定，user 面路由误经 machine 入口）—— 命中即查表给原因 + 处置。→ **部分落**：skill Phase 7 已有「失败映射」（网络超时 / 401/403 / 404 / 500 / 其它）+「边界情况」场景表；上述**接入期条目**（CORS / 缺 /bff / `Unexpected token` / 落错租户 / entry plane / host 双绑定 403）未成表——本 NOTES 各组处置行为现成素材。
 - **两站同源治理**：本次仅 .com 全流程实测；两站生成器同源（core@f495cd5），.cn 结构问题大概率同构 —— 同一修单过两站，发布管线加站间 references diff 校验。→ 2026-10-10 落地上线：构建期按区落位 + 双守卫（见 B1 处置），站间 diff 校验由「按区命名镜像 + 区标记守卫」等价覆盖。
 
 ## SDK demo localhost 全链实证（2026-10-11 深夜）：接入摩擦四修 + SSO token 可调用面
