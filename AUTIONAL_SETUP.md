@@ -4,7 +4,7 @@
 
 - Date: 2026-10-10 · SSO upgrade 2026-10-11
 - Framework: React 16 + custom webpack 5 (redux-saga · react-router v5 · jest 26)
-- Tenant: takenote-demo (trial, expires 2026-10-17)
+- Tenant: takenote-demo (permanent since 2026-10-15 — trial=false, no expiry)
 - Tenant slug: `takenote-demo`
 - Region: **.cn** (SSO line pinned to .cn — the .com auth `/bff` proxy 502s at time of writing; tenant/accounts verified 200 on .cn, notes F6)
 - Environment: local demo mode (`DEMO=true`)

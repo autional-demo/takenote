@@ -130,6 +130,7 @@ Phase 8   浏览器 E2E  ── D17 P0 全阻断 → 同源代理绕行后 5/5 �
 - 现象（DB 实证）：用邀请码成功注册后：`trial = t`、`plan = free`、`trial_expires_at = 注册时刻 + 7 天`（本租户到期 2026-10-17）。
 - 根因（代码证据）：service-tenant `CreateTrialTenant` 中 `trial := true` **无条件**（tenant_service.go:257）；邀请码段只做"查码校验 → 原子消费 → 建租户"，完全不改 trial/plan/时长。
 - 影响：skill 的 [B]「永久租户」表述与实现不符。接入者需按"7 天试用"规划；到期后果与续期路径 skill 未述。
+- **运维注记（2026-10-15）**：租户原试用期至 2026-10-17；**已转永久**（`trial=false` + `trial_expires_at=NULL`，与平台「试用转正式」端点/服务层 `ConvertFromTrial` 同态语义），演示链不再受到期影响。转换通道 = **云库直写**（`autional_tenant.tenant_tenants` 单行条件 UPDATE）——API 通道对存量租户被 C6 阻断（admin 平面登录 403 `entry plane not authorized` / api 平面调 admin 路由被 gateway entry-plane 隔离拒），与 novel-demo（10-14）/ nextchat-demo（10-15）先例同态。
 
 ### C3 · 邀请码无铸造 API，批量发码只能直写数据库
 
